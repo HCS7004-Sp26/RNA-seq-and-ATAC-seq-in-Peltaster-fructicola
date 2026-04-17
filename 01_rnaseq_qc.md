@@ -16,7 +16,7 @@ Before any alignment, you must assess the quality of your raw reads and remove a
 FastQC computes per-read quality scores (Phred), GC content distribution, adapter contamination, and sequence duplication levels. Run it on all 12 RNA-seq files in a single SLURM job using a task array.
 
 ```bash
-cat > ${TUTORIAL}/01_fastqc_raw_rnaseq.sh << 'EOF'
+cat > ${TUTORIAL}/scripts/01_fastqc_raw_rnaseq.sh << 'EOF'
 #!/bin/bash
 #SBATCH --job-name=fastqc_raw_rna
 #SBATCH --account=PAS3260
@@ -52,8 +52,8 @@ apptainer exec --bind ${TUTORIAL} ${SIF} \
 
 echo "[$(date)] FastQC complete."
 EOF
-
-sbatch ${TUTORIAL}/01_fastqc_raw_rnaseq.sh
+cd ${TUTORIAL}
+sbatch ${TUTORIAL}/scripts/01_fastqc_raw_rnaseq.sh
 ```
 
 After the job completes, inspect the output directory:
@@ -71,7 +71,7 @@ You will see one `_fastqc.html` and one `_fastqc.zip` per input file.
 Rather than opening 12 individual FastQC reports, MultiQC aggregates them into a single interactive HTML:
 
 ```bash
-cat > ${TUTORIAL}/01_multiqc_raw_rnaseq.sh << 'EOF'
+cat > ${TUTORIAL}/scripts/01_multiqc_raw_rnaseq.sh << 'EOF'
 #!/bin/bash
 #SBATCH --job-name=multiqc_raw_rna
 #SBATCH --account=PAS3260
@@ -95,8 +95,8 @@ apptainer exec --bind ${TUTORIAL} ${SIF} \
 
 echo "[$(date)] MultiQC complete."
 EOF
-
-sbatch ${TUTORIAL}/01_multiqc_raw_rnaseq.sh
+cd ${TUTORIAL}
+sbatch ${TUTORIAL}/scripts/01_multiqc_raw_rnaseq.sh
 ```
 
 Download the resulting `multiqc_rnaseq_raw.html` to your local machine and open it in a browser:
@@ -126,7 +126,7 @@ Trimmomatic performs four operations in this workflow:
 Submit trimming for all six samples using a SLURM job array (array index 1–6 maps to each sample):
 
 ```bash
-cat > ${TUTORIAL}/01_trimmomatic_rnaseq.sh << 'EOF'
+cat > ${TUTORIAL}/scripts/01_trimmomatic_rnaseq.sh << 'EOF'
 #!/bin/bash
 #SBATCH --job-name=trim_rnaseq
 #SBATCH --account=PAS3260
@@ -160,7 +160,8 @@ apptainer exec --bind ${TUTORIAL} ${SIF} \
         ${OUTDIR}/${SAMPLE}_R1_unpaired.fastq.gz \
         ${OUTDIR}/${SAMPLE}_R2_trimmed.fastq.gz \
         ${OUTDIR}/${SAMPLE}_R2_unpaired.fastq.gz \
-        ILLUMINACLIP:/usr/local/share/trimmomatic/adapters/TruSeq3-PE.fa:2:30:10:2:keepBothReads \
+        ILLUMINACLIP:/opt/conda/pkgs/trimmomatic-0.40-hdfd78af_0/share/trimmomatic-0.40-0/adapters/TruSeq3-PE-2.fa:2:30:10 \
+        -phred33 \
         LEADING:3 \
         TRAILING:3 \
         SLIDINGWINDOW:4:15 \
@@ -168,8 +169,8 @@ apptainer exec --bind ${TUTORIAL} ${SIF} \
 
 echo "[$(date)] Done: ${SAMPLE}"
 EOF
-
-sbatch ${TUTORIAL}/01_trimmomatic_rnaseq.sh
+cd ${TUTORIAL}
+sbatch ${TUTORIAL}/scripts/01_trimmomatic_rnaseq.sh
 ```
 
 After all six array jobs complete, check the trimmed output:
@@ -187,7 +188,7 @@ The `_unpaired.fastq.gz` files contain reads whose mate was discarded. These are
 Re-run FastQC and MultiQC on the trimmed reads to confirm that adapter sequences are gone and overall quality has improved:
 
 ```bash
-cat > ${TUTORIAL}/01_fastqc_trimmed_rnaseq.sh << 'EOF'
+cat > ${TUTORIAL}/scripts/01_fastqc_trimmed_rnaseq.sh << 'EOF'
 #!/bin/bash
 #SBATCH --job-name=fastqc_trim_rna
 #SBATCH --account=PAS3260
@@ -217,8 +218,8 @@ apptainer exec --bind ${TUTORIAL} ${TUTORIAL}/containers/multiqc.sif \
 
 echo "[$(date)] Post-trimming QC complete."
 EOF
-
-sbatch ${TUTORIAL}/01_fastqc_trimmed_rnaseq.sh
+cd ${TUTORIAL}
+sbatch ${TUTORIAL}/scripts/01_fastqc_trimmed_rnaseq.sh
 ```
 
 > **Q8:** Compare the pre- and post-trimming MultiQC reports. What changed in the Adapter Content and Per Base Sequence Quality panels? Approximately what percentage of reads were discarded or quality-trimmed across your samples?

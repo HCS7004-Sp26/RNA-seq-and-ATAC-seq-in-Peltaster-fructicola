@@ -20,7 +20,8 @@ Create your working directory for this tutorial:
 
 ```bash
 export TUTORIAL=/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq
-mkdir -p ${TUTORIAL}/{containers,reference,rnaseq/{fastqc_raw,trimmed,aligned,counts},atacseq/{fastqc_raw,trimmed,aligned,peaks},dge,integration,logs}
+mkdir -p ${TUTORIAL}/{containers,reference,rnaseq/{fastqc_raw,trimmed,aligned,counts},atacseq/{fastqc_raw,trimmed,aligned,peaks},dge,integration,scripts,logs}
+cd ${TUTORIAL}
 ```
 
 Set a convenience variable pointing to the shared class data:
@@ -42,14 +43,15 @@ Rather than copying the large FASTQ files, create symbolic links:
 ln -s ${CLASSDATA}/reference/peltaster_fructicola_genome.fa     ${TUTORIAL}/reference/
 ln -s ${CLASSDATA}/reference/peltaster_fructicola_genome.fa.fai ${TUTORIAL}/reference/
 ln -s ${CLASSDATA}/reference/peltaster_fructicola_annotation.gff3 ${TUTORIAL}/reference/
+ln -s ${CLASSDATA}/reference/peltaster_fructicola_transcripts.gtf ${TUTORIAL}/reference/
 
 # RNA-seq reads
-for f in ${CLASSDATA}/04_rnaseq_illumina/*.fastq.gz; do
+for f in ${CLASSDATA}/rnaseq_illumina/*.fastq.gz; do
     ln -s "$f" ${TUTORIAL}/rnaseq/
 done
 
 # ATAC-seq reads
-for f in ${CLASSDATA}/05_atacseq/*.fastq.gz; do
+for f in ${CLASSDATA}/atacseq/*.fastq.gz; do
     ln -s "$f" ${TUTORIAL}/atacseq/
 done
 
@@ -73,7 +75,7 @@ ls ${TUTORIAL}/atacseq/*.fastq.gz | wc -l  # expect: 6
 All tools are run through Apptainer container images. Pull them now so they are ready when your jobs run. This step requires internet access and can take several minutes — submit it as a SLURM job.
 
 ```bash
-cat > ${TUTORIAL}/00_pull_containers.sh << 'EOF'
+cat > ${TUTORIAL}/scripts/00_pull_containers.sh << 'EOF'
 #!/bin/bash
 #SBATCH --job-name=pull_containers
 #SBATCH --account=PAS3260
@@ -91,7 +93,7 @@ cd ${CONTAINER_DIR}
 
 echo "[$(date)] Pulling FastQC..."
 apptainer pull fastqc.sif \
-    oras://community.wave.seqera.io/library/fastqc:0.12.1--6c2484e2e9c7a8d0
+    oras://community.wave.seqera.io/library/fastqc:0.12.1--104d26ddd9519960
 
 echo "[$(date)] Pulling MultiQC..."
 apptainer pull multiqc.sif \
@@ -106,7 +108,7 @@ apptainer pull hisat2.sif \
     oras://community.wave.seqera.io/library/hisat2:2.2.2--0a747e741adc8dcc
 
 echo "[$(date)] Pulling Samtools..."
-apptainer pull hisat2.sif \
+apptainer pull samtools.sif \
     oras://community.wave.seqera.io/library/samtools:1.23.1--5cb989b890127f7a
 
 echo "[$(date)] Pulling Subread (featureCounts)..."
@@ -121,18 +123,14 @@ echo "[$(date)] Pulling MACS3..."
 apptainer pull macs3.sif \
     oras://community.wave.seqera.io/library/macs3:3.0.4--1d41c250736f1138
 
-echo "[$(date)] Pulling R/Bioconductor (DESeq2)..."
-apptainer pull deseq2.sif \
-    docker://quay.io/biocontainers/bioconductor-deseq2:1.50.2--r45ha27e39d_0
-
 echo "[$(date)] All containers pulled successfully."
 ls -lh ${CONTAINER_DIR}/*.sif
 EOF
-
-sbatch ${TUTORIAL}/00_pull_containers.sh
+cd ${TUTORIAL}
+sbatch ${TUTORIAL}/scripts/00_pull_containers.sh
 ```
 
-> **Tip:** Monitor job progress with `squeue -u <your_username>`. Container SIF files are large (~400 MB–1 GB each); the full pull job may take 30–45 minutes.
+> **Tip:** Monitor job progress with `squeue -u OSCuser`. Container SIF files are large (~400 MB–1 GB each); the full pull job may take 30–45 minutes.
 
 After the job completes, confirm that all `.sif` files are present:
 
@@ -140,7 +138,7 @@ After the job completes, confirm that all `.sif` files are present:
 ls -lh ${TUTORIAL}/containers/*.sif
 ```
 
-You should see nine container images: `fastqc.sif`, `multiqc.sif`, `trimmomatic.sif`, `hisat2.sif`, `samtools.sif`, `subread.sif`, `bowtie2.sif`, `macs3.sif`, and `deseq2.sif`.
+You should see nine container images: `fastqc.sif`, `multiqc.sif`, `trimmomatic.sif`, `hisat2.sif`, `samtools.sif`, `subread.sif`, `bowtie2.sif`, and `macs3.sif`.
 
 > **Q2:** What is the purpose of using Apptainer containers instead of loading modules directly with `module load`? Name one advantage this approach offers for reproducibility.
 

@@ -19,7 +19,7 @@ HISAT2 requires a pre-built index of the reference genome. Because *P. fructicol
 Build the index in a dedicated directory:
 
 ```bash
-cat > ${TUTORIAL}/02_hisat2_index.sh << 'EOF'
+cat > ${TUTORIAL}/scripts/02_hisat2_index.sh << 'EOF'
 #!/bin/bash
 #SBATCH --job-name=hisat2_index
 #SBATCH --account=PAS3260
@@ -47,8 +47,8 @@ apptainer exec --bind ${TUTORIAL} ${SIF} \
 echo "[$(date)] Index complete."
 ls -lh ${TUTORIAL}/reference/hisat2_index/
 EOF
-
-sbatch ${TUTORIAL}/02_hisat2_index.sh
+cd ${TUTORIAL}
+sbatch ${TUTORIAL}/scripts/02_hisat2_index.sh
 ```
 
 When the job finishes, you should see eight `.ht2` index files in `reference/hisat2_index/`.
@@ -62,7 +62,7 @@ When the job finishes, you should see eight `.ht2` index files in `reference/his
 Align all six trimmed paired-end samples using a SLURM job array. Each job also immediately sorts and indexes the output BAM to minimize intermediate storage.
 
 ```bash
-cat > ${TUTORIAL}/02_hisat2_align_rnaseq.sh << 'EOF'
+cat > ${TUTORIAL}/scripts/02_hisat2_align_rnaseq.sh << 'EOF'
 #!/bin/bash
 #SBATCH --job-name=hisat2_align
 #SBATCH --account=PAS3260
@@ -114,8 +114,8 @@ echo "[$(date)] Done: ${SAMPLE}"
 echo "Alignment summary for ${SAMPLE}:"
 cat ${TUTORIAL}/logs/hisat2_${SAMPLE}.summary
 EOF
-
-sbatch ${TUTORIAL}/02_hisat2_align_rnaseq.sh
+cd ${TUTORIAL}
+sbatch ${TUTORIAL}/scripts/02_hisat2_align_rnaseq.sh
 ```
 
 After all jobs complete, check alignment rates from the summary files:
@@ -133,7 +133,7 @@ grep "overall alignment rate" ${TUTORIAL}/logs/hisat2_*.summary
 ## 2.3 — Assess Alignment Quality with Samtools Flagstat
 
 ```bash
-cat > ${TUTORIAL}/02_flagstat_rnaseq.sh << 'EOF'
+cat > ${TUTORIAL}/scripts/02_flagstat_rnaseq.sh << 'EOF'
 #!/bin/bash
 #SBATCH --job-name=flagstat_rna
 #SBATCH --account=PAS3260
@@ -158,8 +158,8 @@ done > ${TUTORIAL}/rnaseq/aligned/flagstat_summary.txt
 
 cat ${TUTORIAL}/rnaseq/aligned/flagstat_summary.txt
 EOF
-
-sbatch ${TUTORIAL}/02_flagstat_rnaseq.sh
+cd ${TUTORIAL}
+sbatch ${TUTORIAL}/scripts/02_flagstat_rnaseq.sh
 ```
 
 ---
@@ -178,7 +178,7 @@ Key parameters:
 - `-g gene_id` attribute to group by
 
 ```bash
-cat > ${TUTORIAL}/02_featurecounts.sh << 'EOF'
+cat > ${TUTORIAL}/scripts/02_featurecounts.sh << 'EOF'
 #!/bin/bash
 #SBATCH --job-name=featurecounts
 #SBATCH --account=PAS3260
@@ -202,7 +202,7 @@ apptainer exec --bind ${TUTORIAL} ${SIF} \
         -s 2 \
         -T 8 \
         -Q 10 \
-        -a ${TUTORIAL}/reference/peltaster_fructicola_annotation.gff3 \
+        -a ${TUTORIAL}/reference/peltaster_fructicola_transcripts.gtf \
         -t exon \
         -g gene_id \
         -o ${TUTORIAL}/rnaseq/counts/peltaster_counts.txt \
@@ -216,8 +216,8 @@ apptainer exec --bind ${TUTORIAL} ${SIF} \
 echo "[$(date)] featureCounts complete."
 head -3 ${TUTORIAL}/rnaseq/counts/peltaster_counts.txt
 EOF
-
-sbatch ${TUTORIAL}/02_featurecounts.sh
+cd ${TUTORIAL}
+sbatch ${TUTORIAL}/scripts/02_featurecounts.sh
 ```
 
 After the job completes, inspect the count matrix:
