@@ -34,7 +34,7 @@ In fungal ATAC-seq, mitochondrial DNA (and rDNA) is often highly accessible and 
 The same QC and trimming approach used for RNA-seq applies here, but ATAC-seq reads commonly show higher adapter content because short fragments from sub-nucleosomal regions may be entirely adapter sequence.
 
 ```bash
-cat > ${TUTORIAL}/04_atacseq_qc_trim.sh << 'EOF'
+cat > ${TUTORIAL}/scripts/04_atacseq_qc_trim.sh << 'EOF'
 #!/bin/bash
 #SBATCH --job-name=atac_qc_trim
 #SBATCH --account=PAS3260
@@ -77,16 +77,17 @@ apptainer exec --bind ${TUTORIAL} ${TUTORIAL}/containers/trimmomatic.sif \
         ${TRIMDIR}/${SAMPLE}_R1_unpaired.fastq.gz \
         ${TRIMDIR}/${SAMPLE}_R2_trimmed.fastq.gz \
         ${TRIMDIR}/${SAMPLE}_R2_unpaired.fastq.gz \
-        ILLUMINACLIP:/usr/local/share/trimmomatic/adapters/NexteraPE-PE.fa:2:30:10:2:keepBothReads \
+        ILLUMINACLIP:/opt/conda/share/trimmomatic-0.40-0/adapters/NexteraPE-PE.fa:2:30:10 \
+        -phred33 \
         LEADING:3 \
         TRAILING:3 \
         SLIDINGWINDOW:4:15 \
-        MINLEN:20
+        MINLEN:36
 
 echo "[$(date)] Done: ${SAMPLE}"
 EOF
-
-sbatch ${TUTORIAL}/04_atacseq_qc_trim.sh
+cd ${TUTORIAL}
+sbatch ${TUTORIAL}/scripts/04_atacseq_qc_trim.sh
 ```
 
 > **Q24:** ATAC-seq uses **Nextera** adapters rather than the TruSeq adapters used for RNA-seq. Why does the library preparation chemistry differ, and what property of the Tn5 transposase drives adapter choice?
@@ -98,7 +99,7 @@ sbatch ${TUTORIAL}/04_atacseq_qc_trim.sh
 For ATAC-seq, we use Bowtie2 in **very sensitive** mode with a liberal insert size range to capture both sub-nucleosomal and di-nucleosomal fragments:
 
 ```bash
-cat > ${TUTORIAL}/04_bowtie2_index.sh << 'EOF'
+cat > ${TUTORIAL}/scripts/04_bowtie2_index.sh << 'EOF'
 #!/bin/bash
 #SBATCH --job-name=bowtie2_index
 #SBATCH --account=PAS3260
@@ -124,14 +125,14 @@ apptainer exec --bind ${TUTORIAL} ${SIF} \
 echo "[$(date)] Bowtie2 index complete."
 ls -lh ${TUTORIAL}/reference/bowtie2_index/
 EOF
-
-sbatch ${TUTORIAL}/04_bowtie2_index.sh
+cd ${TUTORIAL}
+sbatch ${TUTORIAL}/scripts/04_bowtie2_index.sh
 ```
 
 Now align all three ATAC-seq replicates:
 
 ```bash
-cat > ${TUTORIAL}/04_bowtie2_align_atac.sh << 'EOF'
+cat > ${TUTORIAL}/scripts/04_bowtie2_align_atac.sh << 'EOF'
 #!/bin/bash
 #SBATCH --job-name=bowtie2_atac
 #SBATCH --account=PAS3260
@@ -181,8 +182,8 @@ apptainer exec --bind ${TUTORIAL} ${SAM_SIF} \
 echo "[$(date)] Done: ${SAMPLE}"
 cat ${TUTORIAL}/logs/bowtie2_${SAMPLE}.summary
 EOF
-
-sbatch ${TUTORIAL}/04_bowtie2_align_atac.sh
+cd ${TUTORIAL}
+sbatch ${TUTORIAL}/scripts/04_bowtie2_align_atac.sh
 ```
 
 ---
@@ -197,14 +198,14 @@ ATAC-seq requires several filtering steps after alignment. Perform these in sequ
 **Step 4: Remove mitochondrial reads** (if a mitochondrial contig is present)
 
 ```bash
-cat > ${TUTORIAL}/04_atac_filter.sh << 'EOF'
+cat > ${TUTORIAL}/scripts/04_atac_filter.sh << 'EOF'
 #!/bin/bash
 #SBATCH --job-name=atac_filter
 #SBATCH --account=PAS3260
-#SBATCH --time=01:00:00
+#SBATCH --time=01:30:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=24G
+#SBATCH --mem=32G
 #SBATCH --array=1-3
 #SBATCH --output=/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq/logs/atac_filter_%A_%a.log
 
@@ -213,23 +214,60 @@ set -euo pipefail
 TUTORIAL=/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq
 SIF=${TUTORIAL}/containers/samtools.sif
 INDIR=${TUTORIAL}/atacseq/aligned
+TMPDIR=${TUTORIAL}/atacseq/tmp
+
+mkdir -p ${TMPDIR}
 
 SAMPLES=(atac_wt_rep1 atac_wt_rep2 atac_wt_rep3)
 SAMPLE=${SAMPLES[$((SLURM_ARRAY_TASK_ID - 1))]}
 
-echo "[$(date)] Filtering: ${SAMPLE}"
+echo "[$(date)] Processing: ${SAMPLE}"
 
-# Remove duplicates with samtools markdup
+# Step 1: Name-sort the coordinate-sorted BAM
+# fixmate requires mates to be adjacent (name order)
+echo "[$(date)] Step 1: Name-sort..."
+apptainer exec --bind ${TUTORIAL} ${SIF} \
+    samtools sort \
+        -n \
+        -@ 8 \
+        -m 2G \
+        -T ${TMPDIR}/${SAMPLE}_namesort \
+        -o ${INDIR}/${SAMPLE}.namesorted.bam \
+        ${INDIR}/${SAMPLE}.sorted.bam
+
+# Step 2: fixmate — adds MC tag and mate score tags needed by markdup
+echo "[$(date)] Step 2: fixmate..."
+apptainer exec --bind ${TUTORIAL} ${SIF} \
+    samtools fixmate \
+        -m \
+        -@ 8 \
+        ${INDIR}/${SAMPLE}.namesorted.bam \
+        ${INDIR}/${SAMPLE}.fixmate.bam
+
+# Step 3: Re-sort by coordinate for markdup
+echo "[$(date)] Step 3: Coordinate-sort after fixmate..."
+apptainer exec --bind ${TUTORIAL} ${SIF} \
+    samtools sort \
+        -@ 8 \
+        -m 2G \
+        -T ${TMPDIR}/${SAMPLE}_coordsort \
+        -o ${INDIR}/${SAMPLE}.fixmate.sorted.bam \
+        ${INDIR}/${SAMPLE}.fixmate.bam
+
+# Step 4: Mark and remove duplicates
+echo "[$(date)] Step 4: markdup..."
 apptainer exec --bind ${TUTORIAL} ${SIF} \
     samtools markdup \
         -r \
         -@ 8 \
         -s \
-        ${INDIR}/${SAMPLE}.sorted.bam \
+        -f ${TUTORIAL}/logs/markdup_${SAMPLE}.stats \
+        ${INDIR}/${SAMPLE}.fixmate.sorted.bam \
         ${INDIR}/${SAMPLE}.dedup.bam
 
-# Filter: properly paired (-f 2), high MAPQ (-q 30), remove supplementary (-F 2048)
-# Also remove unmapped, secondary alignments
+# Step 5: Filter — properly paired (-f 2), high MAPQ (-q 30),
+#          remove unmapped/secondary/supplementary/QC-fail (-F 1804)
+echo "[$(date)] Step 5: Filter..."
 apptainer exec --bind ${TUTORIAL} ${SIF} \
     samtools view \
         -@ 8 \
@@ -240,30 +278,49 @@ apptainer exec --bind ${TUTORIAL} ${SIF} \
         ${INDIR}/${SAMPLE}.dedup.bam \
 | apptainer exec --bind ${TUTORIAL} ${SIF} \
     samtools sort \
-        -@ 8 -m 2G \
+        -@ 8 \
+        -m 2G \
+        -T ${TMPDIR}/${SAMPLE}_final \
         -o ${INDIR}/${SAMPLE}.filtered.bam
 
 apptainer exec --bind ${TUTORIAL} ${SIF} \
     samtools index ${INDIR}/${SAMPLE}.filtered.bam
 
-# Report read counts at each stage
+# Step 6: Read count summary at each stage
+echo ""
 echo "=== ${SAMPLE} read counts ==="
-echo -n "Raw aligned:  "
-apptainer exec --bind ${TUTORIAL} ${SIF} \
-    samtools view -c ${INDIR}/${SAMPLE}.sorted.bam
+echo -n "Raw aligned:      "
+apptainer exec --bind ${TUTORIAL} ${SIF} samtools view -c    ${INDIR}/${SAMPLE}.sorted.bam
+echo -n "After fixmate:    "
+apptainer exec --bind ${TUTORIAL} ${SIF} samtools view -c    ${INDIR}/${SAMPLE}.fixmate.sorted.bam
+echo -n "After dedup:      "
+apptainer exec --bind ${TUTORIAL} ${SIF} samtools view -c    ${INDIR}/${SAMPLE}.dedup.bam
+echo -n "After filter:     "
+apptainer exec --bind ${TUTORIAL} ${SIF} samtools view -c -f 2 ${INDIR}/${SAMPLE}.filtered.bam
 
-echo -n "After dedup:  "
-apptainer exec --bind ${TUTORIAL} ${SIF} \
-    samtools view -c ${INDIR}/${SAMPLE}.dedup.bam
+echo ""
+echo "Duplicate stats:"
+cat ${TUTORIAL}/logs/markdup_${SAMPLE}.stats
 
-echo -n "After filter: "
-apptainer exec --bind ${TUTORIAL} ${SIF} \
-    samtools view -c ${INDIR}/${SAMPLE}.filtered.bam
+# Step 7: Clean up large intermediates
+echo "[$(date)] Cleaning up intermediates..."
+rm -f ${INDIR}/${SAMPLE}.namesorted.bam \
+      ${INDIR}/${SAMPLE}.fixmate.bam \
+      ${INDIR}/${SAMPLE}.fixmate.sorted.bam \
+      ${INDIR}/${SAMPLE}.dedup.bam
 
 echo "[$(date)] Done: ${SAMPLE}"
+echo "Final filtered BAM: ${INDIR}/${SAMPLE}.filtered.bam"
 EOF
+cd ${TUTORIAL}
+sbatch ${TUTORIAL}/scripts/04_atac_filter.sh
 
-sbatch ${TUTORIAL}/04_atac_filter.sh
+# After the jobs are done, confirm all three filtered BAMs exist and are indexed
+ls -lh ${TUTORIAL}/atacseq/aligned/*.filtered.bam
+ls -lh ${TUTORIAL}/atacseq/aligned/*.filtered.bam.bai
+
+# Check duplication rates
+cat ${TUTORIAL}/logs/markdup_atac_wt_rep*.stats
 ```
 
 ---
@@ -273,59 +330,161 @@ sbatch ${TUTORIAL}/04_atac_filter.sh
 A key quality metric for ATAC-seq is the fragment size distribution, which should show a characteristic nucleosomal ladder: a prominent sub-nucleosomal peak (~100–150 bp), a mono-nucleosomal peak (~200 bp), and decreasing di- and tri-nucleosomal peaks.
 
 ```bash
+cat > ${TUTORIAL}/scripts/04_extract_insert_sizes.sh << 'EOF'
+#!/bin/bash
+#SBATCH --job-name=insert_sizes
+#SBATCH --account=PAS3260
+#SBATCH --time=00:30:00
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=8G
+#SBATCH --array=1-3
+#SBATCH --output=/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq/logs/insert_sizes_%A_%a.log
+
+set -euo pipefail
+
+TUTORIAL=/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq
+SIF=${TUTORIAL}/containers/samtools.sif
+
+SAMPLES=(atac_wt_rep1 atac_wt_rep2 atac_wt_rep3)
+SAMPLE=${SAMPLES[$((SLURM_ARRAY_TASK_ID - 1))]}
+
+echo "[$(date)] Extracting insert sizes: ${SAMPLE}"
+
+# -f 2: properly paired reads only
+# $9 is the TLEN (template length) field — positive for the leftmost read of each pair
+apptainer exec --bind ${TUTORIAL} ${SIF} \
+    samtools view -f 2 \
+        ${TUTORIAL}/atacseq/aligned/${SAMPLE}.filtered.bam \
+| awk '$9 > 0 && $9 < 1000 {print $9}' \
+| sort -n \
+| uniq -c \
+> ${TUTORIAL}/atacseq/${SAMPLE}_insert_sizes.txt
+
+echo "Lines written: $(wc -l < ${TUTORIAL}/atacseq/${SAMPLE}_insert_sizes.txt)"
+echo "[$(date)] Done: ${SAMPLE}"
+EOF
+cd ${TUTORIAL}
+sbatch ${TUTORIAL}/scripts/04_extract_insert_sizes.sh
+```
+
+After it finishes, verify the format of one output file:
+```bash
+head -5 ${TUTORIAL}/atacseq/atac_wt_rep1_insert_sizes.txt
+```
+
+### Write the R script
+
+```bash
 cat > ${TUTORIAL}/scripts/plot_fragment_sizes.R << 'REOF'
-# Plot ATAC-seq fragment size distributions from BAM files
-# Uses ATACseqQC or manual extraction via samtools
+# ============================================================
+# ATAC-seq Fragment Size Distribution
+# P. fructicola wild type
+# HCS 7004 — Genome Analytics
+# ============================================================
+
+# Ensure personal R library is on the search path
+.libPaths(c(Sys.getenv("R_LIBS_USER"), .libPaths()))
 
 suppressPackageStartupMessages(library(ggplot2))
 
-# This script reads fragment sizes from pre-extracted insert size data
-# First extract with samtools:
-#   samtools view -f 2 sample.filtered.bam | awk '{print $9}' | sort -n | uniq -c > insert_sizes.txt
-
-outdir <- "/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq/atacseq"
+# --- Paths ---
+atacdir <- "/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq/atacseq"
 samples <- c("atac_wt_rep1", "atac_wt_rep2", "atac_wt_rep3")
 
+# --- Load insert size tables ---
+# uniq -c output: col1 = count, col2 = insert size
 all_frags <- lapply(samples, function(s) {
-  f <- file.path(outdir, paste0(s, "_insert_sizes.txt"))
-  if (!file.exists(f)) return(NULL)
-  d <- read.table(f, col.names = c("count", "size"))
+  f <- file.path(atacdir, paste0(s, "_insert_sizes.txt"))
+  if (!file.exists(f)) {
+    message("WARNING: file not found — ", f)
+    return(NULL)
+  }
+  d <- read.table(f, header = FALSE,
+                  col.names = c("count", "size"))
   d <- d[d$size > 0 & d$size < 1000, ]
   d$sample <- s
   d
 })
 
+# Check that at least one file loaded
+if (all(sapply(all_frags, is.null))) {
+  stop("No insert size files found. Run 04_extract_insert_sizes.sh first.")
+}
+
 frag_df <- do.call(rbind, Filter(Negate(is.null), all_frags))
 
+cat(sprintf("Total size classes loaded: %d across %d samples\n",
+            nrow(frag_df), length(unique(frag_df$sample))))
+
+# --- Plot ---
 p <- ggplot(frag_df, aes(x = size, y = count, color = sample)) +
   geom_line(linewidth = 0.8, alpha = 0.8) +
-  scale_y_log10() +
-  scale_x_continuous(breaks = seq(0, 1000, 100)) +
-  geom_vline(xintercept = c(150, 200, 400), linetype = "dashed", color = "grey50") +
-  labs(title = "ATAC-seq Fragment Size Distribution",
-       subtitle = "P. fructicola wild type",
-       x = "Insert size (bp)",
-       y = "Read count (log10)",
-       color = "Replicate") +
-  theme_bw(base_size = 12)
+  scale_y_log10(
+    labels = scales::label_comma()
+  ) +
+  scale_x_continuous(
+    breaks = seq(0, 1000, 100),
+    limits = c(0, 1000)
+  ) +
+  # Nucleosomal size reference lines
+  geom_vline(xintercept = 150, linetype = "dashed",
+             color = "grey40", linewidth = 0.5) +
+  geom_vline(xintercept = 200, linetype = "dashed",
+             color = "grey40", linewidth = 0.5) +
+  geom_vline(xintercept = 400, linetype = "dashed",
+             color = "grey40", linewidth = 0.5) +
+  annotate("text", x = 155, y = 10, label = "NFR",
+           hjust = 0, size = 3, color = "grey30") +
+  annotate("text", x = 205, y = 10, label = "Mono-nuc",
+           hjust = 0, size = 3, color = "grey30") +
+  annotate("text", x = 405, y = 10, label = "Di-nuc",
+           hjust = 0, size = 3, color = "grey30") +
+  labs(
+    title    = "ATAC-seq Fragment Size Distribution",
+    subtitle = "P. fructicola wild type (3 replicates)",
+    x        = "Insert size (bp)",
+    y        = "Read count (log10 scale)",
+    color    = "Replicate"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(panel.grid.minor = element_blank())
 
-ggsave(file.path(outdir, "fragment_size_distribution.pdf"), p, width = 8, height = 5)
-cat("Fragment size plot saved.\n")
+outfile <- file.path(atacdir, "fragment_size_distribution.pdf")
+ggsave(outfile, p, width = 8, height = 5)
+cat("Fragment size plot saved to:", outfile, "\n")
 REOF
 ```
 
-To extract insert sizes from filtered BAMs:
+### Submit the SLURM job
 
 ```bash
-for SAMPLE in atac_wt_rep1 atac_wt_rep2 atac_wt_rep3; do
-  apptainer exec --bind ${TUTORIAL} ${TUTORIAL}/containers/samtools.sif \
-      samtools view -f 2 ${TUTORIAL}/atacseq/aligned/${SAMPLE}.filtered.bam \
-  | awk '{if($9>0) print $9}' \
-  | sort -n | uniq -c \
-  > ${TUTORIAL}/atacseq/${SAMPLE}_insert_sizes.txt &
-done
-wait
-echo "Insert size extraction complete."
+cat > ${TUTORIAL}/scripts/04_plot_fragment_sizes.sh << 'EOF'
+#!/bin/bash
+#SBATCH --job-name=frag_size_plot
+#SBATCH --account=PAS3260
+#SBATCH --time=00:15:00
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=8G
+#SBATCH --output=/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq/logs/frag_size_plot_%j.log
+
+set -euo pipefail
+
+TUTORIAL=/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq
+
+module load gcc/12.3.0
+module load R/4.5.2
+
+echo "[$(date)] Plotting fragment size distributions..."
+
+Rscript ${TUTORIAL}/scripts/plot_fragment_sizes.R
+
+echo "[$(date)] Done."
+ls -lh ${TUTORIAL}/atacseq/fragment_size_distribution.pdf
+EOF
+cd ${TUTORIAL}
+sbatch ${TUTORIAL}/scripts/04_plot_fragment_sizes.sh
 ```
 
 > **Q25:** Describe the fragment size distribution you observe. Do you see the expected nucleosomal ladder pattern? The sub-nucleosomal peak (< 150 bp) represents DNA fragments from nucleosome-free regions. The mono-nucleosomal peak (~200 bp) represents DNA wrapped around a single nucleosome that was not accessible. Why are both populations present in an ATAC-seq library?

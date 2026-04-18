@@ -36,8 +36,16 @@ GFF=${TUTORIAL}/reference/peltaster_fructicola_annotation.gff3
 First, create a BED file of promoter regions for all DEGs. You need to look up the genomic coordinates of each significant DEG in the GFF3:
 
 ```bash
-cat > ${TUTORIAL}/scripts/deg_promoters.sh << 'EOF'
+cat > ${TUTORIAL}/scripts/06_deg_promoters.sh << 'EOF'
 #!/bin/bash
+#SBATCH --job-name=deg_promoters
+#SBATCH --account=PAS3260
+#SBATCH --time=00:15:00
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=8G
+#SBATCH --output=/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq/logs/deg_promoters_%j.log
+
 set -euo pipefail
 
 TUTORIAL=/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq
@@ -47,30 +55,65 @@ OUTDIR=${TUTORIAL}/integration
 
 mkdir -p ${OUTDIR}
 
-# Extract gene IDs from DEG CSV (column 1, skip header)
-tail -n +2 ${DEG_FILE} | cut -d',' -f1 | sed 's/"//g' \
+# --- Step 1: Extract DEG gene IDs from the CSV ---
+# Column 1, skip header, strip quotes and the "t1." prefix
+# DESeq2 inherits the "t1." prefix from featureCounts/GTF gene IDs,
+# but the GFF3-derived promoter BED uses bare IDs (e.g. AMS68_000995).
+# Stripping the prefix here ensures the grep in Step 3 finds matches.
+tail -n +2 ${DEG_FILE} \
+    | cut -d',' -f1 \
+    | sed 's/"//g' \
+    | sed 's/^t1\.//' \
     > ${OUTDIR}/deg_gene_ids.txt
 
-echo "Total significant DEGs: $(wc -l < ${OUTDIR}/deg_gene_ids.txt)"
+echo "Significant DEGs: $(wc -l < ${OUTDIR}/deg_gene_ids.txt)"
 
-# Extract promoter coordinates for DEGs from GFF3
-# Match gene IDs (accounting for the "t1." prefix in GFF3 gene_id attribute)
-while IFS= read -r gene; do
-    grep -P "\tgene\t" ${GFF} | grep -F "${gene}" 
-done < ${OUTDIR}/deg_gene_ids.txt \
-| awk 'BEGIN{OFS="\t"} {
-    match($9, /gene_id=([^;]+)/, arr)
-    if ($7=="+") print $1, ($4>2000 ? $4-2001 : 0), $4, arr[1], ".", $7
-    else          print $1, $5-1, $5+2000, arr[1], ".", $7
-}' | sort -k1,1 -k2,2n \
-> ${OUTDIR}/deg_promoters.bed
+# --- Step 2: Build promoter BED for all genes in GFF3 ---
+# Single pass through the GFF3 — much faster than one grep per gene
+grep -P "\tgene\t" ${GFF} \
+    | awk 'BEGIN{OFS="\t"} {
+        match($9, /gene_id=([^;]+)/, arr)
+        gid = arr[1]
+        if ($7=="+") {
+            s = ($4 > 2001 ? $4 - 2001 : 0)
+            print $1, s, $4, gid, ".", $7
+        } else {
+            print $1, $5 - 1, $5 + 2000, gid, ".", $7
+        }
+    }' | sort -k1,1 -k2,2n \
+    > ${OUTDIR}/all_gene_promoters_2kb.bed
+
+echo "All gene promoters: $(wc -l < ${OUTDIR}/all_gene_promoters_2kb.bed)"
+
+# --- Step 3: Subset to DEG promoters ---
+# grep -F matches any line containing one of the DEG gene IDs
+# The IDs may carry a "t1." prefix in the GFF3 — match flexibly
+grep -F -f ${OUTDIR}/deg_gene_ids.txt \
+    ${OUTDIR}/all_gene_promoters_2kb.bed \
+    | sort -k1,1 -k2,2n \
+    > ${OUTDIR}/deg_promoters.bed
 
 echo "DEG promoter regions: $(wc -l < ${OUTDIR}/deg_promoters.bed)"
-EOF
 
-bash ${TUTORIAL}/scripts/deg_promoters.sh
+# --- Sanity check: warn if the counts differ noticeably ---
+N_IDS=$(wc -l < ${OUTDIR}/deg_gene_ids.txt)
+N_BED=$(wc -l < ${OUTDIR}/deg_promoters.bed)
+if [ "${N_BED}" -lt "${N_IDS}" ]; then
+    echo "WARNING: ${N_BED} promoter regions found for ${N_IDS} DEG IDs."
+    echo "Some gene IDs may not match the GFF3 — check ID format consistency."
+fi
+
+echo "[$(date)] Done."
+EOF
+cd ${TUTORIAL}
+sbatch ${TUTORIAL}/scripts/06_deg_promoters.sh
 ```
 
+After it runs, check the log and verify the counts look right before moving on to the bedtools intersection step:
+```bash
+cat ${TUTORIAL}/logs/deg_promoters_*.log
+head -3 ${TUTORIAL}/integration/deg_promoters.bed
+```
 ---
 
 ## 6.2 — Test for Enrichment of ATAC Peaks at DEG Promoters
@@ -78,7 +121,7 @@ bash ${TUTORIAL}/scripts/deg_promoters.sh
 Do DEG promoters have significantly more ATAC-seq peaks than expected by chance? We test this by comparing peak overlap at DEG promoters to a random set of background gene promoters.
 
 ```bash
-cat > ${TUTORIAL}/06_deg_peak_overlap.sh << 'EOF'
+cat > ${TUTORIAL}/scripts/06_deg_peak_overlap.sh << 'EOF'
 #!/bin/bash
 #SBATCH --job-name=deg_peak_overlap
 #SBATCH --account=PAS3260
@@ -91,14 +134,15 @@ cat > ${TUTORIAL}/06_deg_peak_overlap.sh << 'EOF'
 set -euo pipefail
 
 TUTORIAL=/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq
-BEDTOOLS_SIF=${CLASSDATA}/containers/bedtools.sif
+BEDTOOLS_SIF=${TUTORIAL}/containers/bedtools.sif
 GFF=${TUTORIAL}/reference/peltaster_fructicola_annotation.gff3
 PEAKS=${TUTORIAL}/atacseq/peaks/consensus/consensus_peaks_2of3.bed
 OUTDIR=${TUTORIAL}/integration
 
 # ---- DEG promoters vs. ATAC peaks ----
 echo "=== DEG Promoters with ATAC Peaks ==="
-apptainer exec --bind ${TUTORIAL},${CLASSDATA} ${BEDTOOLS_SIF} \
+
+apptainer exec --bind ${TUTORIAL} ${BEDTOOLS_SIF} \
     bedtools intersect \
         -a ${OUTDIR}/deg_promoters.bed \
         -b ${PEAKS} \
@@ -108,7 +152,7 @@ apptainer exec --bind ${TUTORIAL},${CLASSDATA} ${BEDTOOLS_SIF} \
 DEG_TOTAL=$(wc -l < ${OUTDIR}/deg_promoters.bed)
 DEG_WITH_PEAKS=$(wc -l < ${OUTDIR}/deg_promoters_with_peaks.bed)
 DEG_PCT=$(echo "scale=1; 100*${DEG_WITH_PEAKS}/${DEG_TOTAL}" | bc)
-echo "DEG promoters: ${DEG_TOTAL}"
+echo "DEG promoters:                ${DEG_TOTAL}"
 echo "DEG promoters with ATAC peak: ${DEG_WITH_PEAKS} (${DEG_PCT}%)"
 
 # ---- All gene promoters vs. ATAC peaks (background) ----
@@ -123,7 +167,7 @@ grep -P "\tgene\t" ${GFF} \
       }' | sort -k1,1 -k2,2n \
 > ${OUTDIR}/all_gene_promoters.bed
 
-apptainer exec --bind ${TUTORIAL},${CLASSDATA} ${BEDTOOLS_SIF} \
+apptainer exec --bind ${TUTORIAL} ${BEDTOOLS_SIF} \
     bedtools intersect \
         -a ${OUTDIR}/all_gene_promoters.bed \
         -b ${PEAKS} \
@@ -133,13 +177,21 @@ apptainer exec --bind ${TUTORIAL},${CLASSDATA} ${BEDTOOLS_SIF} \
 ALL_TOTAL=$(wc -l < ${OUTDIR}/all_gene_promoters.bed)
 ALL_WITH_PEAKS=$(wc -l < ${OUTDIR}/all_promoters_with_peaks.bed)
 ALL_PCT=$(echo "scale=1; 100*${ALL_WITH_PEAKS}/${ALL_TOTAL}" | bc)
-echo "All gene promoters: ${ALL_TOTAL}"
-echo "All promoters with ATAC peak: ${ALL_WITH_PEAKS} (${ALL_PCT}%)"
+echo "All gene promoters:                ${ALL_TOTAL}"
+echo "All promoters with ATAC peak:      ${ALL_WITH_PEAKS} (${ALL_PCT}%)"
 echo ""
 echo "Enrichment (DEG% / All%): $(echo "scale=2; ${DEG_PCT}/${ALL_PCT}" | bc)"
-EOF
 
-sbatch ${TUTORIAL}/06_deg_peak_overlap.sh
+# ---- Write gene ID list for the R integration step ----
+awk '{print $4}' ${OUTDIR}/all_promoters_with_peaks.bed \
+    | sort -u > ${OUTDIR}/genes_with_promoter_peaks.txt
+
+echo ""
+echo "Gene IDs with promoter ATAC peak: $(wc -l < ${OUTDIR}/genes_with_promoter_peaks.txt)"
+echo "[$(date)] Done."
+EOF
+cd ${TUTORIAL}
+sbatch ${TUTORIAL}/scripts/06_deg_peak_overlap.sh
 ```
 
 ---
@@ -151,13 +203,19 @@ Now zoom in on GH31 (AMS68_008039) and its immediate genomic neighborhood. GH31 
 ```bash
 # Find GH31 in the annotation
 grep "AMS68_008039" ${TUTORIAL}/reference/peltaster_fructicola_annotation.gff3 | head -5
+```
 
-# Check for ATAC peaks near the GH31 locus
-# Define a 5 kb window around GH31
+Check for ATAC peaks near the GH31 locus by defining a 5 kb window around the gene and intersecting it with the consensus peak set:
+
+```bash
+BEDTOOLS_SIF=${TUTORIAL}/containers/bedtools.sif
+
+# Define a 5 kb window spanning the GH31 locus
 echo -e "CP051143.1\t2677570\t2690565\tGH31_region" \
     > ${TUTORIAL}/integration/gh31_region.bed
 
-apptainer exec --bind ${TUTORIAL},${CLASSDATA} ${CLASSDATA}/containers/bedtools.sif \
+# Find consensus peaks overlapping that window
+apptainer exec --bind ${TUTORIAL} ${BEDTOOLS_SIF} \
     bedtools intersect \
         -a ${TUTORIAL}/atacseq/peaks/consensus/consensus_peaks_2of3.bed \
         -b ${TUTORIAL}/integration/gh31_region.bed \
@@ -168,18 +226,19 @@ echo "ATAC peaks within 5 kb of GH31:"
 cat ${TUTORIAL}/integration/gh31_nearby_peaks.bed
 ```
 
-Also check the most accessible peak in the entire dataset — the peak with the highest MACS3 score:
+Also check the most accessible peaks in the entire dataset — the peaks with the highest MACS3 score:
 
 ```bash
-# Combine all three replicates' narrowPeak scores and find the maximum
-cat ${TUTORIAL}/atacseq/peaks/atac_wt_rep*/atac_wt_rep*_peaks.narrowPeak \
+# Combine all three replicates' narrowPeak files and sort by -log10(q-value) (column 9)
+cat ${TUTORIAL}/atacseq/peaks/atac_wt_rep1/atac_wt_rep1_peaks.narrowPeak \
+    ${TUTORIAL}/atacseq/peaks/atac_wt_rep2/atac_wt_rep2_peaks.narrowPeak \
+    ${TUTORIAL}/atacseq/peaks/atac_wt_rep3/atac_wt_rep3_peaks.narrowPeak \
     | sort -k9,9rn | head -10
 ```
 
 The `-log10(q-value)` score is in column 9 of the narrowPeak format. Higher scores indicate higher confidence peaks.
 
 > **Q31:** Does the GH31 promoter region have an ATAC-seq peak? Based on the MACS3 score, how does this peak rank compared to all peaks in the genome? What does exceptional chromatin accessibility at the GH31 locus suggest about its regulation?
-
 ---
 
 ## 6.4 — Integrate DEG and ATAC Data in R
@@ -194,171 +253,234 @@ cat > ${TUTORIAL}/scripts/multiomics_integration.R << 'REOF'
 # HCS 7004 — Genome Analytics
 # ============================================================
 
+# Ensure the personal R library is on the search path
+.libPaths(c(Sys.getenv("R_LIBS_USER"), .libPaths()))
+
 suppressPackageStartupMessages({
   library(ggplot2)
   library(dplyr)
   library(tidyr)
+  library(scales)
 })
 
-OUTDIR <- "/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq/integration"
-DGEDIR <- "/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq/dge"
+# --- Paths ---
+BASE   <- "/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq"
+DGEDIR <- file.path(BASE, "dge")
+OUTDIR <- file.path(BASE, "integration")
+dir.create(OUTDIR, showWarnings = FALSE, recursive = TRUE)
 
 # ----------------------------------------------------------
 # 1. Load DESeq2 results
 # ----------------------------------------------------------
 deseq2 <- read.csv(file.path(DGEDIR, "peltaster_deseq2_results.csv"),
                    stringsAsFactors = FALSE)
+cat(sprintf("DESeq2 results loaded: %d genes\n", nrow(deseq2)))
 
-cat("Total genes tested:", nrow(deseq2), "\n")
-
-# ----------------------------------------------------------
-# 2. Load ATAC peak annotation
-# (which gene promoters have peaks)
-# ----------------------------------------------------------
-# promoters_with_peaks.bed has: chr, start, end, gene_id, ., strand
-peak_genes <- read.table(
-    file.path("/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq/atacseq/peaks/consensus",
-              "peaks_in_promoters.bed"),
-    header = FALSE, sep = "\t",
-    col.names = c("chr","start","end","gene_id","score","strand",
-                  "peak_chr","peak_start","peak_end")
-  )[, "gene_id", drop = FALSE]
-
-peak_genes <- peak_genes %>%
-  mutate(has_atac_peak = TRUE) %>%
-  distinct()
-
-cat("Genes with promoter ATAC peak:", nrow(peak_genes), "\n")
+# Strip the "t1." prefix from gene IDs to match the GFF3-derived IDs
+deseq2$gene_id_clean <- sub("^t1\\.", "", deseq2$gene_id)
 
 # ----------------------------------------------------------
-# 3. Merge RNA-seq and ATAC data
+# 2. Load genes with promoter ATAC peaks
+#    (produced by 06a_promoter_peak_overlap.sh)
+# ----------------------------------------------------------
+peak_genes_file <- file.path(OUTDIR, "genes_with_promoter_peaks.txt")
+
+if (!file.exists(peak_genes_file)) {
+  stop("genes_with_promoter_peaks.txt not found. Run 06_deg_peak_overlap.sh first.")
+}
+
+peak_gene_ids <- readLines(peak_genes_file)
+peak_gene_ids <- sub("^t1\\.", "", trimws(peak_gene_ids))
+cat(sprintf("Genes with promoter ATAC peak: %d\n", length(peak_gene_ids)))
+
+# ----------------------------------------------------------
+# 3. Merge and categorize
 # ----------------------------------------------------------
 merged <- deseq2 %>%
-  left_join(peak_genes, by = "gene_id") %>%
-  mutate(has_atac_peak = ifelse(is.na(has_atac_peak), FALSE, TRUE))
+  mutate(
+    has_atac_peak = gene_id_clean %in% peak_gene_ids,
+    deg_category  = case_when(
+      !is.na(padj) & padj < 0.05 & log2FoldChange >  1 ~ "Up in WT",
+      !is.na(padj) & padj < 0.05 & log2FoldChange < -1 ~ "Down in WT",
+      TRUE ~ "Background"
+    )
+  )
 
-cat("Genes with both RNA-seq and ATAC data:",
-    sum(!is.na(merged$padj) & merged$has_atac_peak), "\n")
+cat(sprintf("Genes with ATAC peak + expression data: %d\n",
+            sum(merged$has_atac_peak & !is.na(merged$padj))))
 
 # ----------------------------------------------------------
-# 4. Compare expression changes: genes with vs. without peaks
+# 4. ATAC peak rate by DEG category
 # ----------------------------------------------------------
-merged_filtered <- merged %>%
-  filter(!is.na(log2FoldChange), !is.na(padj))
+atac_by_deg <- merged %>%
+  filter(!is.na(padj)) %>%
+  group_by(deg_category) %>%
+  summarise(
+    n_genes     = n(),
+    n_with_peak = sum(has_atac_peak),
+    pct_peak    = round(100 * mean(has_atac_peak), 1),
+    .groups     = "drop"
+  )
 
-p_boxplot <- ggplot(merged_filtered,
-       aes(x = has_atac_peak, y = log2FoldChange,
-           fill = has_atac_peak)) +
-  geom_boxplot(outlier.size = 0.5, alpha = 0.7) +
-  scale_fill_manual(values = c("FALSE" = "#AAAAAA", "TRUE" = "#2196F3")) +
-  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
-  labs(title = "Expression change vs. ATAC-seq accessibility",
-       subtitle = "P. fructicola WT vs gh31del",
-       x = "Promoter has ATAC peak",
-       y = expression(log[2]~"Fold Change (WT / gh31del)"),
-       fill = "ATAC peak") +
+cat("\n=== ATAC Peak Rate by Expression Category ===\n")
+print(atac_by_deg)
+write.csv(atac_by_deg,
+          file.path(OUTDIR, "atac_rate_by_deg_category.csv"),
+          row.names = FALSE)
+
+# ----------------------------------------------------------
+# 5. Fisher's exact test: Up-in-WT vs. Background
+# ----------------------------------------------------------
+up_peak   <- sum(merged$deg_category == "Up in WT"   & merged$has_atac_peak,  na.rm = TRUE)
+up_nopeak <- sum(merged$deg_category == "Up in WT"   & !merged$has_atac_peak, na.rm = TRUE)
+bg_peak   <- sum(merged$deg_category == "Background" & merged$has_atac_peak,  na.rm = TRUE)
+bg_nopeak <- sum(merged$deg_category == "Background" & !merged$has_atac_peak, na.rm = TRUE)
+
+ct <- matrix(c(up_peak, up_nopeak, bg_peak, bg_nopeak),
+             nrow = 2,
+             dimnames = list(
+               c("Has ATAC peak", "No ATAC peak"),
+               c("Up in WT", "Background")
+             ))
+
+cat("\n=== Fisher's Exact Test: Up-in-WT vs. Background ===\n")
+print(ct)
+ft <- fisher.test(ct)
+cat(sprintf("Odds ratio: %.2f\n", ft$estimate))
+cat(sprintf("p-value:    %.4g\n", ft$p.value))
+
+# ----------------------------------------------------------
+# 6. Stacked bar chart
+# ----------------------------------------------------------
+bar_df <- atac_by_deg %>%
+  mutate(
+    pct_no_peak  = 100 - pct_peak,
+    deg_category = factor(deg_category,
+                          levels = c("Up in WT", "Down in WT", "Background"))
+  ) %>%
+  pivot_longer(cols = c("pct_peak", "pct_no_peak"),
+               names_to  = "peak_status",
+               values_to = "pct") %>%
+  mutate(peak_status = ifelse(peak_status == "pct_peak",
+                              "Has ATAC peak", "No ATAC peak"))
+
+p_bar <- ggplot(bar_df,
+                aes(x = deg_category, y = pct, fill = peak_status)) +
+  geom_col(width = 0.6) +
+  scale_fill_manual(values = c("Has ATAC peak" = "#1976D2",
+                               "No ATAC peak"  = "#E0E0E0")) +
+  geom_text(data = atac_by_deg %>%
+              mutate(deg_category = factor(deg_category,
+                                           levels = c("Up in WT","Down in WT","Background"))),
+            aes(x = deg_category, y = pct_peak + 3,
+                label = paste0(pct_peak, "%"), fill = NULL),
+            size = 4) +
+  labs(title    = "Chromatin accessibility at DEG promoters",
+       subtitle = "Fraction of genes with promoter ATAC-seq peak",
+       x        = "Expression category (WT vs. gh31del)",
+       y        = "Percentage of genes (%)",
+       fill     = "") +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "bottom")
+
+ggsave(file.path(OUTDIR, "bar_atac_by_deg_category.pdf"),
+       p_bar, width = 7, height = 5)
+cat("Bar chart saved.\n")
+
+# ----------------------------------------------------------
+# 7. Violin + boxplot: log2FC vs. ATAC peak presence
+# ----------------------------------------------------------
+p_violin <- ggplot(
+  merged %>% filter(!is.na(log2FoldChange)),
+  aes(x = has_atac_peak, y = log2FoldChange, fill = has_atac_peak)
+) +
+  geom_violin(trim = TRUE, alpha = 0.7) +
+  geom_boxplot(width = 0.08, fill = "white", outlier.size = 0.3) +
+  geom_hline(yintercept = 0, linetype = "dashed",
+             color = "red", linewidth = 0.6) +
+  scale_x_discrete(labels = c("FALSE" = "No peak", "TRUE" = "Has peak")) +
+  scale_fill_manual(values = c("FALSE" = "#B0BEC5", "TRUE" = "#1565C0"),
+                    guide  = "none") +
+  labs(title    = "Expression change vs. chromatin accessibility",
+       subtitle = "P. fructicola WT vs. gh31del",
+       x        = "Promoter ATAC-seq peak",
+       y        = expression(log[2]~"Fold Change (WT / gh31del)")) +
   theme_bw(base_size = 12)
 
-ggsave(file.path(OUTDIR, "boxplot_atac_vs_expression.pdf"),
-       p_boxplot, width = 6, height = 5)
-
-# Wilcoxon rank-sum test
-wt <- wilcox.test(
-  log2FoldChange ~ has_atac_peak,
-  data = merged_filtered,
-  alternative = "two.sided"
-)
-cat("\nWilcoxon test (log2FC: peak vs. no peak):\n")
-cat(sprintf("  W = %.0f, p = %.4g\n", wt$statistic, wt$p.value))
+ggsave(file.path(OUTDIR, "violin_atac_vs_lfc.pdf"),
+       p_violin, width = 6, height = 5)
+cat("Violin plot saved.\n")
 
 # ----------------------------------------------------------
-# 5. Focus on significant DEGs: are they enriched for ATAC peaks?
+# 8. Genes of interest: GH31 and its key target
 # ----------------------------------------------------------
-sig_threshold <- 0.05
-fc_threshold  <- 1.0
-
-sig_degs <- merged_filtered %>%
-  filter(padj < sig_threshold, abs(log2FoldChange) >= fc_threshold)
-
-up_in_wt   <- sig_degs %>% filter(log2FoldChange > 0)
-down_in_wt <- sig_degs %>% filter(log2FoldChange < 0)
-
-cat("\n--- Significant DEGs with ATAC peaks ---\n")
-cat(sprintf("Upregulated in WT: %d total, %d with ATAC peak (%.0f%%)\n",
-            nrow(up_in_wt),
-            sum(up_in_wt$has_atac_peak),
-            100*mean(up_in_wt$has_atac_peak)))
-cat(sprintf("Downregulated in WT: %d total, %d with ATAC peak (%.0f%%)\n",
-            nrow(down_in_wt),
-            sum(down_in_wt$has_atac_peak),
-            100*mean(down_in_wt$has_atac_peak)))
-cat(sprintf("Background (not DEG): %d total, %d with ATAC peak (%.0f%%)\n",
-            nrow(merged_filtered) - nrow(sig_degs),
-            sum(!sig_degs$has_atac_peak & merged_filtered$padj >= sig_threshold),
-            100*mean(merged_filtered$has_atac_peak[merged_filtered$padj >= sig_threshold |
-                                                    is.na(merged_filtered$padj)])))
-
-# ----------------------------------------------------------
-# 6. The GH31 locus: expression and accessibility
-# ----------------------------------------------------------
-gh31_gene   <- "AMS68_008039"
-gh31_master <- "AMS68_000995"   # The key downstream regulator
-
-for (goi in c(gh31_gene, gh31_master)) {
-  row <- merged %>% filter(grepl(goi, gene_id))
+genes_of_interest <- c("AMS68_008039", "AMS68_000995")
+cat("\n=== Key Genes of Interest ===\n")
+for (g in genes_of_interest) {
+  row <- merged %>% filter(grepl(g, gene_id))
   if (nrow(row) > 0) {
-    cat(sprintf("\n%s:\n", goi))
-    cat(sprintf("  log2FC (WT/del) = %.2f\n", row$log2FoldChange))
-    cat(sprintf("  padj = %.2e\n", row$padj))
-    cat(sprintf("  Has ATAC peak = %s\n", row$has_atac_peak))
+    cat(sprintf("\nGene: %s\n", g))
+    cat(sprintf("  log2FC (WT/del): %s\n",
+                ifelse(is.na(row$log2FoldChange), "NA",
+                       sprintf("%.3f", row$log2FoldChange))))
+    cat(sprintf("  padj:            %s\n",
+                ifelse(is.na(row$padj), "NA", sprintf("%.3e", row$padj))))
+    cat(sprintf("  Has ATAC peak:   %s\n",  row$has_atac_peak))
+    cat(sprintf("  DEG category:    %s\n",  row$deg_category))
+  } else {
+    cat(sprintf("\n%s: not found in DESeq2 results\n", g))
   }
 }
 
 # ----------------------------------------------------------
-# 7. Summary table of key DEGs
+# 9. Write final integrated table
 # ----------------------------------------------------------
-key_genes <- sig_degs %>%
-  arrange(desc(abs(log2FoldChange))) %>%
-  select(gene_id, log2FoldChange, padj, has_atac_peak) %>%
-  head(20)
+final_table <- merged %>%
+  filter(!is.na(padj)) %>%
+  select(gene_id, baseMean, log2FoldChange, lfcSE,
+         stat, pvalue, padj, has_atac_peak, deg_category) %>%
+  arrange(padj)
 
-cat("\n--- Top 20 DEGs by |log2FC| ---\n")
-print(key_genes)
-
-write.csv(key_genes,
-          file.path(OUTDIR, "top_degs_with_atac.csv"),
+write.csv(final_table,
+          file.path(OUTDIR, "integrated_rnaseq_atacseq.csv"),
           row.names = FALSE)
 
-cat("\nIntegration analysis complete.\n")
+cat(sprintf("\nFull integrated table: %d genes — written to integrated_rnaseq_atacseq.csv\n",
+            nrow(final_table)))
+cat("Integration analysis complete.\n")
 REOF
 ```
 
 Submit the integration analysis:
 
 ```bash
-cat > ${TUTORIAL}/06_multiomics.sh << 'EOF'
+cat > ${TUTORIAL}/scripts/06b_multiomics_r.sh << 'EOF'
 #!/bin/bash
-#SBATCH --job-name=multiomics
+#SBATCH --job-name=multiomics_r
 #SBATCH --account=PAS3260
 #SBATCH --time=00:20:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=8G
-#SBATCH --output=/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq/logs/multiomics_%j.log
+#SBATCH --output=/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq/logs/multiomics_r_%j.log
 
 set -euo pipefail
 
 TUTORIAL=/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq
-SIF=${TUTORIAL}/containers/deseq2.sif
 
-apptainer exec --bind ${TUTORIAL} ${SIF} \
-    Rscript ${TUTORIAL}/scripts/multiomics_integration.R
+# Load OSC R modules
+module load gcc/12.3.0
+module load R/4.5.2
 
-echo "[$(date)] Integration analysis complete."
+echo "[$(date)] Running multi-omics integration..."
+
+Rscript ${TUTORIAL}/scripts/multiomics_integration.R
+
+echo "[$(date)] Done."
 ls -lh ${TUTORIAL}/integration/
 EOF
-
-sbatch ${TUTORIAL}/06_multiomics.sh
+cd ${TUTORIAL}
+sbatch ${TUTORIAL}/scripts/06b_multiomics_r.sh
 ```
 
 ---
@@ -390,26 +512,17 @@ By this point, you have:
 
 ---
 
-## 6.6 — Bonus: Visualize the GH31 Region in IGV
+## 6.6 — Visualize the GH31 Region in IGV
 
-For a direct visual check of your data, load your results into the Integrative Genomics Viewer (IGV). Download to your local machine:
+If you have not yet loaded your data into IGV, follow the complete step-by-step guide in **[Module 05 — Section 5.6](05_peak_calling.md)**. That section covers downloading all required files, loading the custom genome, bigWig tracks, consensus peaks BED, and RNA-seq BAMs, and navigating to any locus of interest.
 
-```bash
-# On your LOCAL machine:
-scp <username>@pitzer.osc.edu:/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq/reference/peltaster_fructicola_genome.fa ~/Desktop/
-scp <username>@pitzer.osc.edu:/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq/reference/peltaster_fructicola_annotation.gff3 ~/Desktop/
-scp <username>@pitzer.osc.edu:/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq/rnaseq/aligned/rnaseq_wt_rep1.sorted.bam ~/Desktop/
-scp <username>@pitzer.osc.edu:/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq/atacseq/aligned/atac_wt_rep1.filtered.bam ~/Desktop/
+Once your session is set up, navigate to the GH31 locus:
+
+```
+CP051143.1:2,680,000-2,690,000
 ```
 
-In IGV:
-1. Load the *P. fructicola* genome (FASTA + index)
-2. Load the GFF3 annotation
-3. Load the RNA-seq BAM (WT rep1)
-4. Load the ATAC-seq BAM (WT rep1)
-5. Navigate to `CP051143.1:2,680,000-2,690,000` (the GH31 locus region)
-
-> **Q37:** Describe what you see in the IGV browser at the GH31 locus. Is the chromatin accessibility (ATAC coverage) highest at the promoter, gene body, or 3′ end? How does the RNA-seq read density compare between the WT and *gh31del* tracks?
+> **Q39:** Describe what you see in the IGV browser at the GH31 locus. Is the chromatin accessibility (ATAC coverage) highest at the promoter, gene body, or 3′ end? How does the RNA-seq read density compare between the WT and *gh31del* tracks?
 
 ---
 

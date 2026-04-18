@@ -193,6 +193,8 @@ set -euo pipefail
 TUTORIAL=/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq
 SIF=${TUTORIAL}/containers/subread.sif
 
+mkdir -p ${TUTORIAL}/rnaseq/counts
+
 echo "[$(date)] Running featureCounts..."
 
 apptainer exec --bind ${TUTORIAL} ${SIF} \
@@ -244,7 +246,12 @@ cat ${TUTORIAL}/rnaseq/counts/peltaster_counts.txt.summary
 
 Counts are not directly comparable across samples because library sizes differ. TPM (Transcripts Per Million) normalizes by both gene length and total library size. We compute TPM here for exploratory visualization only — **DESeq2 uses raw counts** for statistical testing.
 
-Create a simple TPM script:
+Create a simple TPM script and run it in an interactive session:
+
+```bash
+# Start an interactive session — do not run python scripts on the login node
+sinteractive -A PAS3260 -t 00:15:00 --mem=4G
+```
 
 ```bash
 cat > ${TUTORIAL}/scripts/compute_tpm.py << 'PYEOF'

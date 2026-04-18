@@ -56,7 +56,7 @@ for f in ${CLASSDATA}/atacseq/*.fastq.gz; do
 done
 
 # Genome sizes file (needed for ATAC-seq)
-ln -s ${CLASSDATA}/05_atacseq/genome.sizes ${TUTORIAL}/atacseq/
+ln -s ${CLASSDATA}/atacseq/genome.sizes ${TUTORIAL}/atacseq/
 ```
 
 Verify that you have 12 RNA-seq files (6 samples × 2 reads) and 6 ATAC-seq files (3 samples × 2 reads):
@@ -123,6 +123,14 @@ echo "[$(date)] Pulling MACS3..."
 apptainer pull macs3.sif \
     oras://community.wave.seqera.io/library/macs3:3.0.4--1d41c250736f1138
 
+echo "[$(date)] Pulling BEDtools..."
+apptainer pull bedtools.sif \
+    oras://community.wave.seqera.io/library/bedtools:2.31.1--a120a7e98287539a
+
+echo "[$(date)] Pulling deepTools..."
+apptainer pull deeptools.sif \
+    oras://community.wave.seqera.io/library/deeptools:3.5.6--718d316362a5e588
+
 echo "[$(date)] All containers pulled successfully."
 ls -lh ${CONTAINER_DIR}/*.sif
 EOF
@@ -138,7 +146,7 @@ After the job completes, confirm that all `.sif` files are present:
 ls -lh ${TUTORIAL}/containers/*.sif
 ```
 
-You should see nine container images: `fastqc.sif`, `multiqc.sif`, `trimmomatic.sif`, `hisat2.sif`, `samtools.sif`, `subread.sif`, `bowtie2.sif`, and `macs3.sif`.
+You should see ten container images: `fastqc.sif`, `multiqc.sif`, `trimmomatic.sif`, `hisat2.sif`, `samtools.sif`, `subread.sif`, `bowtie2.sif`, `macs3.sif`, `bedtools.sif` and `deeptools.sif`.
 
 > **Q2:** What is the purpose of using Apptainer containers instead of loading modules directly with `module load`? Name one advantage this approach offers for reproducibility.
 

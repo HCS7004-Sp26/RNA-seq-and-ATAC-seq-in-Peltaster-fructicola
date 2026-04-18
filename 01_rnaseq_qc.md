@@ -160,7 +160,7 @@ apptainer exec --bind ${TUTORIAL} ${SIF} \
         ${OUTDIR}/${SAMPLE}_R1_unpaired.fastq.gz \
         ${OUTDIR}/${SAMPLE}_R2_trimmed.fastq.gz \
         ${OUTDIR}/${SAMPLE}_R2_unpaired.fastq.gz \
-        ILLUMINACLIP:/opt/conda/pkgs/trimmomatic-0.40-hdfd78af_0/share/trimmomatic-0.40-0/adapters/TruSeq3-PE-2.fa:2:30:10 \
+        ILLUMINACLIP:/opt/conda/share/trimmomatic-0.40-0/adapters/TruSeq3-PE-2.fa:2:30:10 \
         -phred33 \
         LEADING:3 \
         TRAILING:3 \
