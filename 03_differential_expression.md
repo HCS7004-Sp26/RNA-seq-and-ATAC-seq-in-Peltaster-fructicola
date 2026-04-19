@@ -29,7 +29,7 @@ By default, R on OSC will install user packages to `~/R/x86_64-pc-linux-gnu-libr
 
 ```bash
 # Start an interactive session (do not install packages on the login node)
-sinteractive -A PAS3260 -t 00:30:00 --mem=8G
+sinteractive -A PAS3260 -t 30:00
 
 # Load the modules
 module load gcc/12.3.0
@@ -367,8 +367,8 @@ After the job completes, download the output files to your local machine:
 
 ```bash
 # Run on your LOCAL terminal (not on OSC)
-scp <username>@pitzer.osc.edu:/fs/scratch/PAS3260/hcs7004/<your_username>/rnaseq_atacseq/dge/*.pdf ~/Desktop/
-scp <username>@pitzer.osc.edu:/fs/scratch/PAS3260/hcs7004/<your_username>/rnaseq_atacseq/dge/*.csv ~/Desktop/
+scp <username>@pitzer.osc.edu:/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq/dge/*.pdf ~/Desktop/
+scp <username>@pitzer.osc.edu:/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq/dge/*.csv ~/Desktop/
 ```
 
 Open `pca_plot.pdf`, `volcano_plot.pdf`, `ma_plot.pdf`, and `dispersion_plot.pdf`.
@@ -377,18 +377,18 @@ Then on OSC, examine the significant DEG list:
 
 ```bash
 # How many significant DEGs?
-awk -F',' 'NR>1 && $7!="NA" && $7<0.05 && ($6>1 || $6<-1) {print}' \
+awk -F',' 'NR>1 && $7!="NA" && $7<0.05 && ($3>1 || $3<-1) {print}' \
     ${TUTORIAL}/dge/peltaster_deseq2_results.csv | wc -l
 
 # Top upregulated genes in WT (sorted by log2FC)
-awk -F',' 'NR>1 && $7!="NA" && $7<0.05 && $6>0 {print}' \
+awk -F',' 'NR>1 && $7!="NA" && $7<0.05 && $3>1 {print}' \
     ${TUTORIAL}/dge/peltaster_deseq2_results.csv \
-    | sort -t',' -k6 -rn | head -10
+    | sort -t',' -k3 -rn | head -10
 
 # Top downregulated genes in WT
-awk -F',' 'NR>1 && $7!="NA" && $7<0.05 && $6<0 {print}' \
+awk -F',' 'NR>1 && $7!="NA" && $7<0.05 && $3<-1 {print}' \
     ${TUTORIAL}/dge/peltaster_deseq2_results.csv \
-    | sort -t',' -k6 -n | head -10
+    | sort -t',' -k3 -n | head -10
 ```
 
 ---
@@ -403,7 +403,7 @@ awk -F',' 'NR>1 && $7!="NA" && $7<0.05 && $6<0 {print}' \
 
 ```bash
 # Look up the top upregulated gene in the annotation
-TOPGENE="<insert top upregulated gene ID>"
+TOPGENE="AMS68_008039"
 grep "${TOPGENE}" ${TUTORIAL}/reference/peltaster_fructicola_annotation.gff3 | head -5
 ```
 

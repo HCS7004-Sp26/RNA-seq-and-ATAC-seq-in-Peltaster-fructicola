@@ -43,7 +43,6 @@ Rather than copying the large FASTQ files, create symbolic links:
 ln -s ${CLASSDATA}/reference/peltaster_fructicola_genome.fa     ${TUTORIAL}/reference/
 ln -s ${CLASSDATA}/reference/peltaster_fructicola_genome.fa.fai ${TUTORIAL}/reference/
 ln -s ${CLASSDATA}/reference/peltaster_fructicola_annotation.gff3 ${TUTORIAL}/reference/
-ln -s ${CLASSDATA}/reference/peltaster_fructicola_transcripts.gtf ${TUTORIAL}/reference/
 
 # RNA-seq reads
 for f in ${CLASSDATA}/rnaseq_illumina/*.fastq.gz; do
@@ -131,6 +130,10 @@ echo "[$(date)] Pulling deepTools..."
 apptainer pull deeptools.sif \
     oras://community.wave.seqera.io/library/deeptools:3.5.6--718d316362a5e588
 
+echo "[$(date)] Pulling gffread..."
+apptainer pull ${TUTORIAL}/containers/gffread.sif \
+    oras://community.wave.seqera.io/library/gffread:0.12.9--a58b95c542f56e93
+
 echo "[$(date)] All containers pulled successfully."
 ls -lh ${CONTAINER_DIR}/*.sif
 EOF
@@ -146,7 +149,7 @@ After the job completes, confirm that all `.sif` files are present:
 ls -lh ${TUTORIAL}/containers/*.sif
 ```
 
-You should see ten container images: `fastqc.sif`, `multiqc.sif`, `trimmomatic.sif`, `hisat2.sif`, `samtools.sif`, `subread.sif`, `bowtie2.sif`, `macs3.sif`, `bedtools.sif` and `deeptools.sif`.
+You should see eleven container images: `fastqc.sif`, `multiqc.sif`, `trimmomatic.sif`, `hisat2.sif`, `samtools.sif`, `subread.sif`, `bowtie2.sif`, `macs3.sif`, `bedtools.sif`, `deeptools.sif` and `gffread.sif`.
 
 > **Q2:** What is the purpose of using Apptainer containers instead of loading modules directly with `module load`? Name one advantage this approach offers for reproducibility.
 

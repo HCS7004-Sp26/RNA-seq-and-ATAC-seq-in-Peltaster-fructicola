@@ -164,7 +164,61 @@ sbatch ${TUTORIAL}/scripts/02_flagstat_rnaseq.sh
 
 ---
 
-## 2.4 — Count Reads per Gene with featureCounts
+## 2.4 — Convert Reference Annotation to GTF
+
+featureCounts requires a GTF-format annotation. The reference annotation is in GFF3 format, so we first convert it using **gffread**. This ensures gene IDs in the count matrix match the reference (`AMS68_XXXXXX` format) rather than any intermediate assembly labels.
+
+Convert the GFF3 to GTF:
+
+```bash
+cat > ${TUTORIAL}/scripts/02_gff_to_gtf.sh << 'EOF'
+#!/bin/bash
+#SBATCH --job-name=gff_to_gtf
+#SBATCH --account=PAS3260
+#SBATCH --time=00:10:00
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=4G
+#SBATCH --output=/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq/logs/gff_to_gtf_%j.log
+
+set -euo pipefail
+
+TUTORIAL=/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq
+SIF=${TUTORIAL}/containers/gffread.sif
+
+echo "[$(date)] Converting GFF3 to GTF..."
+
+apptainer exec --bind ${TUTORIAL} ${SIF} \
+    gffread \
+        ${TUTORIAL}/reference/peltaster_fructicola_annotation.gff3 \
+        -T \
+        -o ${TUTORIAL}/reference/peltaster_fructicola_annotation.gtf
+
+echo "[$(date)] Conversion complete."
+echo "GTF line count: $(wc -l < ${TUTORIAL}/reference/peltaster_fructicola_annotation.gtf)"
+
+# Verify gene IDs look correct — should show AMS68_XXXXXX format
+echo "Sample gene_id values:"
+grep -m 5 'gene_id' ${TUTORIAL}/reference/peltaster_fructicola_annotation.gtf \
+    | cut -f9 | grep -oP 'gene_id "[^"]+"'
+EOF
+cd ${TUTORIAL}
+sbatch ${TUTORIAL}/scripts/02_gff_to_gtf.sh
+```
+
+Confirm the output before proceeding:
+
+```bash
+# Should show AMS68_XXXXXX gene IDs — not STRG.XXXX or any other prefix
+grep -m 3 'gene_id' ${TUTORIAL}/reference/peltaster_fructicola_annotation.gtf \
+    | cut -f9 | grep -oP 'gene_id "[^"]+"'
+```
+
+> **Note:** If gene IDs beginning with `STRG.` appear at any point in downstream results, it means a StringTie-assembled GTF was used instead of this reference-derived file. Always use `peltaster_fructicola_annotation.gtf` produced by this step.
+
+---
+
+## 2.5 — Count Reads per Gene with featureCounts
 
 featureCounts (part of the Subread package) assigns aligned reads to annotated gene features. It counts only reads that unambiguously map to a single gene.
 
@@ -173,7 +227,7 @@ Key parameters:
 - `-s 2` reverse-strand library (standard for TruSeq stranded RNA-seq)
 - `-T 8` number of threads
 - `-Q 10` minimum mapping quality
-- `-a` annotation file (GFF3)
+- `-a` annotation file (GTF converted from reference GFF3 in section 2.4)
 - `-t exon` feature type to count
 - `-g gene_id` attribute to group by
 
@@ -204,7 +258,7 @@ apptainer exec --bind ${TUTORIAL} ${SIF} \
         -s 2 \
         -T 8 \
         -Q 10 \
-        -a ${TUTORIAL}/reference/peltaster_fructicola_transcripts.gtf \
+        -a ${TUTORIAL}/reference/peltaster_fructicola_annotation.gtf \
         -t exon \
         -g gene_id \
         -o ${TUTORIAL}/rnaseq/counts/peltaster_counts.txt \
@@ -242,15 +296,15 @@ cat ${TUTORIAL}/rnaseq/counts/peltaster_counts.txt.summary
 
 ---
 
-## 2.5 — Compute TPM Values
+## 2.6 — Compute TPM Values
 
 Counts are not directly comparable across samples because library sizes differ. TPM (Transcripts Per Million) normalizes by both gene length and total library size. We compute TPM here for exploratory visualization only — **DESeq2 uses raw counts** for statistical testing.
 
 Create a simple TPM script and run it in an interactive session:
 
 ```bash
-# Start an interactive session — do not run python scripts on the login node
-sinteractive -A PAS3260 -t 00:15:00 --mem=4G
+# Start a very basic (defaults values) interactive session — do not run python scripts on the login node
+sinteractive -A PAS3260
 ```
 
 ```bash
@@ -303,6 +357,7 @@ python3 ${TUTORIAL}/scripts/compute_tpm.py \
 
 head -5 ${TUTORIAL}/rnaseq/counts/peltaster_tpm.tsv
 wc -l ${TUTORIAL}/rnaseq/counts/peltaster_tpm.tsv
+exit
 ```
 
 > **Q14:** Look up the TPM value for gene `AMS68_008039` (GH31) in your TPM matrix. Compare WT vs. *gh31del* replicates. What do you observe, and does this make biological sense given the experimental design?
