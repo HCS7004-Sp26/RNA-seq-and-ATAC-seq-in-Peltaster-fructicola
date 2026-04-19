@@ -353,7 +353,10 @@ scp <username>@pitzer.osc.edu:/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq
 scp <username>@pitzer.osc.edu:/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq/reference/peltaster_fructicola_annotation.gff3 .
 
 # 3. ATAC-seq bigWig tracks (all three replicates)
-scp <username>@pitzer.osc.edu:/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq/atacseq/aligned/*.rpgc.bw .
+scp <username>@pitzer.osc.edu:/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq/atacseq/aligned/atac_wt_rep1.rpgc.bw \
+    <username>@pitzer.osc.edu:/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq/atacseq/aligned/atac_wt_rep2.rpgc.bw \
+    <username>@pitzer.osc.edu:/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq/atacseq/aligned/atac_wt_rep3.rpgc.bw \
+    .
 
 # 4. Consensus ATAC peaks
 scp <username>@pitzer.osc.edu:/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq/atacseq/peaks/consensus/consensus_peaks_2of3.bed .
