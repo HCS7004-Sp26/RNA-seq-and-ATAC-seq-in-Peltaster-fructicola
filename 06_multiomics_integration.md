@@ -16,11 +16,13 @@ In this module you will:
 3. Examine the GH31 genomic locus in detail
 4. Synthesize biological findings into a regulatory model
 
+> **Note on gene ID format:** Throughout this module, gene IDs follow the format `gene-AMS68_XXXXXX`. This comes from the GFF3 `ID=` attribute, which is how gffread converts the reference annotation and how featureCounts labels genes in the count matrix. Both the DESeq2 results and the promoter BED files produced here use this same format, ensuring consistent matching.
+
 ---
 
 ## 6.1 — Prepare Input Files
 
-You need two key files from previous modules:
+Confirm the three key input files from previous modules are present and non-empty:
 
 ```bash
 # Significant DEGs from Module 03
@@ -31,9 +33,16 @@ PEAKS=${TUTORIAL}/atacseq/peaks/consensus/consensus_peaks_2of3.bed
 
 # Reference annotation
 GFF=${TUTORIAL}/reference/peltaster_fructicola_annotation.gff3
+
+# Counting lines in significant DEG and Consensus peaks
+wc -l ${DEG_FILE} ${PEAKS}
 ```
 
-First, create a BED file of promoter regions for all DEGs. You need to look up the genomic coordinates of each significant DEG in the GFF3:
+---
+
+## 6.2 — Build DEG Promoter BED Files
+
+Create a BED file of 2 kb promoter regions for all significant DEGs, and separately for all genes in the genome (used as background). Both files use gene IDs extracted from the GFF3 `ID=` attribute, which produces the same `gene-AMS68_XXXXXX` format as the DESeq2 results.
 
 ```bash
 cat > ${TUTORIAL}/scripts/06_deg_promoters.sh << 'EOF'
@@ -56,23 +65,24 @@ OUTDIR=${TUTORIAL}/integration
 mkdir -p ${OUTDIR}
 
 # --- Step 1: Extract DEG gene IDs from the CSV ---
-# Column 1, skip header, strip quotes and the "t1." prefix
-# DESeq2 inherits the "t1." prefix from featureCounts/GTF gene IDs,
-# but the GFF3-derived promoter BED uses bare IDs (e.g. AMS68_000995).
-# Stripping the prefix here ensures the grep in Step 3 finds matches.
+# DESeq2 gene IDs use the gene-AMS68_XXXXXX format (from featureCounts on
+# the gffread-converted GTF). Strip quotes only — no prefix manipulation needed.
 tail -n +2 ${DEG_FILE} \
     | cut -d',' -f1 \
     | sed 's/"//g' \
-    | sed 's/^t1\.//' \
     > ${OUTDIR}/deg_gene_ids.txt
 
 echo "Significant DEGs: $(wc -l < ${OUTDIR}/deg_gene_ids.txt)"
+echo "Sample IDs:"
+head -3 ${OUTDIR}/deg_gene_ids.txt
 
 # --- Step 2: Build promoter BED for all genes in GFF3 ---
-# Single pass through the GFF3 — much faster than one grep per gene
+# GFF3 format uses ID= (not gene_id=) in the attributes column.
+# Using plain ERE syntax for gawk compatibility — no PCRE non-capturing groups.
+# ID=([^;]+) reliably extracts gene-AMS68_XXXXXX from GFF3 gene feature lines.
 grep -P "\tgene\t" ${GFF} \
     | awk 'BEGIN{OFS="\t"} {
-        match($9, /gene_id=([^;]+)/, arr)
+        match($9, /ID=([^;]+)/, arr)
         gid = arr[1]
         if ($7=="+") {
             s = ($4 > 2001 ? $4 - 2001 : 0)
@@ -84,10 +94,10 @@ grep -P "\tgene\t" ${GFF} \
     > ${OUTDIR}/all_gene_promoters_2kb.bed
 
 echo "All gene promoters: $(wc -l < ${OUTDIR}/all_gene_promoters_2kb.bed)"
+echo "Sample promoter IDs:"
+head -3 ${OUTDIR}/all_gene_promoters_2kb.bed | cut -f4
 
 # --- Step 3: Subset to DEG promoters ---
-# grep -F matches any line containing one of the DEG gene IDs
-# The IDs may carry a "t1." prefix in the GFF3 — match flexibly
 grep -F -f ${OUTDIR}/deg_gene_ids.txt \
     ${OUTDIR}/all_gene_promoters_2kb.bed \
     | sort -k1,1 -k2,2n \
@@ -95,12 +105,12 @@ grep -F -f ${OUTDIR}/deg_gene_ids.txt \
 
 echo "DEG promoter regions: $(wc -l < ${OUTDIR}/deg_promoters.bed)"
 
-# --- Sanity check: warn if the counts differ noticeably ---
+# --- Sanity check ---
 N_IDS=$(wc -l < ${OUTDIR}/deg_gene_ids.txt)
 N_BED=$(wc -l < ${OUTDIR}/deg_promoters.bed)
 if [ "${N_BED}" -lt "${N_IDS}" ]; then
     echo "WARNING: ${N_BED} promoter regions found for ${N_IDS} DEG IDs."
-    echo "Some gene IDs may not match the GFF3 — check ID format consistency."
+    echo "Check that deg_gene_ids.txt and all_gene_promoters_2kb.bed use the same ID format."
 fi
 
 echo "[$(date)] Done."
@@ -109,16 +119,24 @@ cd ${TUTORIAL}
 sbatch ${TUTORIAL}/scripts/06_deg_promoters.sh
 ```
 
-After it runs, check the log and verify the counts look right before moving on to the bedtools intersection step:
+After it runs, confirm that gene IDs in `deg_gene_ids.txt` and `deg_promoters.bed` column 4 share the same format:
+
 ```bash
 cat ${TUTORIAL}/logs/deg_promoters_*.log
-head -3 ${TUTORIAL}/integration/deg_promoters.bed
+echo "---"
+echo "DEG IDs (first 3):"
+head -3 ${TUTORIAL}/integration/deg_gene_ids.txt
+echo "Promoter BED col4 (first 3):"
+cut -f4 ${TUTORIAL}/integration/deg_promoters.bed | head -3
 ```
+
+Both should show `gene-AMS68_XXXXXX`. If the counts match and IDs look consistent, proceed.
+
 ---
 
-## 6.2 — Test for Enrichment of ATAC Peaks at DEG Promoters
+## 6.3 — Test for Enrichment of ATAC Peaks at DEG Promoters
 
-Do DEG promoters have significantly more ATAC-seq peaks than expected by chance? We test this by comparing peak overlap at DEG promoters to a random set of background gene promoters.
+Do DEG promoters have significantly more ATAC-seq peaks than expected by chance? We test this by comparing peak overlap at DEG promoters to a background of all gene promoters.
 
 ```bash
 cat > ${TUTORIAL}/scripts/06_deg_peak_overlap.sh << 'EOF'
@@ -159,9 +177,10 @@ echo "DEG promoters with ATAC peak: ${DEG_WITH_PEAKS} (${DEG_PCT}%)"
 echo ""
 echo "=== All Gene Promoters with ATAC Peaks (background) ==="
 
+# GFF3 uses ID= (not gene_id=) — plain ERE for gawk compatibility.
 grep -P "\tgene\t" ${GFF} \
     | awk 'BEGIN{OFS="\t"} {
-        match($9, /gene_id=([^;]+)/, arr)
+        match($9, /ID=([^;]+)/, arr)
         if ($7=="+") print $1, ($4>2000 ? $4-2001 : 0), $4, arr[1], ".", $7
         else          print $1, $5-1, $5+2000, arr[1], ".", $7
       }' | sort -k1,1 -k2,2n \
@@ -182,23 +201,27 @@ echo "All promoters with ATAC peak:      ${ALL_WITH_PEAKS} (${ALL_PCT}%)"
 echo ""
 echo "Enrichment (DEG% / All%): $(echo "scale=2; ${DEG_PCT}/${ALL_PCT}" | bc)"
 
-# ---- Write gene ID list for the R integration step ----
+# ---- Gene ID list for R integration step ----
 awk '{print $4}' ${OUTDIR}/all_promoters_with_peaks.bed \
     | sort -u > ${OUTDIR}/genes_with_promoter_peaks.txt
 
 echo ""
 echo "Gene IDs with promoter ATAC peak: $(wc -l < ${OUTDIR}/genes_with_promoter_peaks.txt)"
+echo "Sample IDs:"
+head -3 ${OUTDIR}/genes_with_promoter_peaks.txt
 echo "[$(date)] Done."
 EOF
 cd ${TUTORIAL}
 sbatch ${TUTORIAL}/scripts/06_deg_peak_overlap.sh
 ```
 
+> **Q28:** What percentage of DEG promoters have an ATAC-seq peak compared to the background rate across all genes? Report the enrichment ratio. Is this result surprising given the biology of GH31?
+
 ---
 
-## 6.3 — Examine the GH31 Locus and Its Regulatory Region
+## 6.4 — Examine the GH31 Locus and Its Regulatory Region
 
-Now zoom in on GH31 (AMS68_008039) and its immediate genomic neighborhood. GH31 is located on chromosome CP051143.1 at coordinates 2,682,570–2,685,565 (+ or − strand — check the GFF3).
+Now zoom in on GH31 (AMS68_008039) and its immediate genomic neighborhood. GH31 is located on chromosome CP051143.1 at coordinates 2,682,570–2,685,565.
 
 ```bash
 # Find GH31 in the annotation
@@ -239,11 +262,14 @@ cat ${TUTORIAL}/atacseq/peaks/atac_wt_rep1/atac_wt_rep1_peaks.narrowPeak \
 The `-log10(q-value)` score is in column 9 of the narrowPeak format. Higher scores indicate higher confidence peaks.
 
 > **Q31:** Does the GH31 promoter region have an ATAC-seq peak? Based on the MACS3 score, how does this peak rank compared to all peaks in the genome? What does exceptional chromatin accessibility at the GH31 locus suggest about its regulation?
+
 ---
 
-## 6.4 — Integrate DEG and ATAC Data in R
+## 6.5 — Integrate DEG and ATAC Data in R
 
-Now perform a formal integration analysis in R: for every gene that has both expression data and an ATAC peak in its promoter, examine whether accessibility correlates with expression change.
+With the gene lists from the bedtools steps ready, run the R integration script to formally test whether DEG promoters are enriched for ATAC peaks and produce visualizations.
+
+### Create the R script
 
 ```bash
 cat > ${TUTORIAL}/scripts/multiomics_integration.R << 'REOF'
@@ -276,12 +302,13 @@ deseq2 <- read.csv(file.path(DGEDIR, "peltaster_deseq2_results.csv"),
                    stringsAsFactors = FALSE)
 cat(sprintf("DESeq2 results loaded: %d genes\n", nrow(deseq2)))
 
-# Strip the "t1." prefix from gene IDs to match the GFF3-derived IDs
-deseq2$gene_id_clean <- sub("^t1\\.", "", deseq2$gene_id)
+# Normalize gene IDs: strip the "gene-" prefix to get bare AMS68_XXXXXX
+# for matching against the promoter peak list (same stripping applied to both)
+deseq2$gene_id_clean <- sub("^gene-", "", deseq2$gene_id)
 
 # ----------------------------------------------------------
 # 2. Load genes with promoter ATAC peaks
-#    (produced by 06a_promoter_peak_overlap.sh)
+#    (produced by 06_deg_peak_overlap.sh)
 # ----------------------------------------------------------
 peak_genes_file <- file.path(OUTDIR, "genes_with_promoter_peaks.txt")
 
@@ -290,7 +317,8 @@ if (!file.exists(peak_genes_file)) {
 }
 
 peak_gene_ids <- readLines(peak_genes_file)
-peak_gene_ids <- sub("^t1\\.", "", trimws(peak_gene_ids))
+# Strip "gene-" prefix to match gene_id_clean above
+peak_gene_ids <- sub("^gene-", "", trimws(peak_gene_ids))
 cat(sprintf("Genes with promoter ATAC peak: %d\n", length(peak_gene_ids)))
 
 # ----------------------------------------------------------
@@ -371,7 +399,8 @@ p_bar <- ggplot(bar_df,
                                "No ATAC peak"  = "#E0E0E0")) +
   geom_text(data = atac_by_deg %>%
               mutate(deg_category = factor(deg_category,
-                                           levels = c("Up in WT","Down in WT","Background"))),
+                                           levels = c("Up in WT","Down in WT","Background"))) %>%
+              arrange(deg_category),
             aes(x = deg_category, y = pct_peak + 3,
                 label = paste0(pct_peak, "%"), fill = NULL),
             size = 4) +
@@ -451,7 +480,20 @@ cat("Integration analysis complete.\n")
 REOF
 ```
 
-Submit the integration analysis:
+### Submit all three jobs in dependency order
+
+Run the jobs as a chain so each step waits for the previous one to succeed before starting:
+
+```bash
+JID1=$(sbatch --parsable ${TUTORIAL}/scripts/06_deg_promoters.sh)
+echo "Job 1 (deg_promoters):    ${JID1}"
+
+JID2=$(sbatch --parsable --dependency=afterok:${JID1} \
+    ${TUTORIAL}/scripts/06_deg_peak_overlap.sh)
+echo "Job 2 (deg_peak_overlap): ${JID2}"
+```
+
+Then create and submit the R SLURM wrapper:
 
 ```bash
 cat > ${TUTORIAL}/scripts/06b_multiomics_r.sh << 'EOF'
@@ -479,19 +521,34 @@ Rscript ${TUTORIAL}/scripts/multiomics_integration.R
 echo "[$(date)] Done."
 ls -lh ${TUTORIAL}/integration/
 EOF
-cd ${TUTORIAL}
-sbatch ${TUTORIAL}/scripts/06b_multiomics_r.sh
+
+JID3=$(sbatch --parsable --dependency=afterok:${JID2} \
+    ${TUTORIAL}/scripts/06b_multiomics_r.sh)
+echo "Job 3 (multiomics_r):     ${JID3}"
+echo "All three jobs submitted. Monitor with: squeue -u ${USER}"
+```
+
+All three jobs will run automatically in sequence. A successful run ends with:
+
+```
+Integration analysis complete.
+```
+
+If you see the error `genes_with_promoter_peaks.txt not found`, it means job 2 did not complete successfully — check `${TUTORIAL}/logs/deg_peak_overlap_*.log`.
+
+---
+
+## 6.6 — Download and Interpret Output
+
+```bash
+# On your LOCAL terminal:
+scp <username>@pitzer.osc.edu:/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq/integration/*.pdf ~/Desktop/
+scp <username>@pitzer.osc.edu:/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq/integration/*.csv ~/Desktop/
 ```
 
 ---
 
-## 6.5 — Synthesize Your Findings
-
-By this point, you have:
-
-- A list of genes that change expression in the *gh31* deletion
-- A map of open chromatin across the WT *P. fructicola* genome
-- An understanding of which DEGs have accessible promoters
+## 6.7 — Synthesize Your Findings
 
 > **Q32:** Is the percentage of DEG promoters with ATAC peaks significantly higher than the background rate for all genes? Report the enrichment ratio and interpret what this means for the relationship between chromatin accessibility and transcriptional response to GH31 deletion.
 
@@ -512,7 +569,7 @@ By this point, you have:
 
 ---
 
-## 6.6 — Visualize the GH31 Region in IGV
+## 6.8 — Visualize the GH31 Region in IGV
 
 If you have not yet loaded your data into IGV, follow the complete step-by-step guide in **[Module 05 — Section 5.6](05_peak_calling.md)**. That section covers downloading all required files, loading the custom genome, bigWig tracks, consensus peaks BED, and RNA-seq BAMs, and navigating to any locus of interest.
 
@@ -532,7 +589,7 @@ By the end of this module you should have:
 
 - [x] Intersected DEG promoters with ATAC peaks
 - [x] Computed enrichment of ATAC peaks at DEG vs. background promoters
-- [x] Integration R analysis output and box plots
+- [x] Integration R analysis output: bar chart, violin plot, integrated CSV
 - [x] A synthesized biological model for GH31's regulatory role
 
 ---
@@ -548,7 +605,7 @@ Congratulations on completing the RNA-seq and ATAC-seq analysis workflow! Here i
 | 02 Alignment & Quantification | BAMs, count matrix, TPM values |
 | 03 Differential Expression | DESeq2 results, volcano plot, significant DEGs |
 | 04 ATAC-seq Processing | Filtered BAMs, fragment size distributions |
-| 05 Peak Calling | Consensus ATAC peaks, FRiP scores, peak annotation |
+| 05 Peak Calling | Consensus ATAC peaks, FRiP scores, peak annotation, IGV guide |
 | 06 Multi-Omics Integration | DEG–ATAC overlap, enrichment analysis, regulatory model |
 
 The complete workflow demonstrates how combining transcriptomic (RNA-seq) and epigenomic (ATAC-seq) data can generate richer biological hypotheses than either dataset alone — a cornerstone of modern multi-omics approaches in plant pathology and beyond.
