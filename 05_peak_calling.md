@@ -114,6 +114,7 @@ REP2=${PEAKDIR}/atac_wt_rep2/atac_wt_rep2_peaks.narrowPeak
 REP3=${PEAKDIR}/atac_wt_rep3/atac_wt_rep3_peaks.narrowPeak
 
 # Step 1: Pool all peaks and merge overlapping ones into a union set
+echo "[$(date)] Building union peak set..."
 cat ${REP1} ${REP2} ${REP3} \
     | sort -k1,1 -k2,2n \
     | apptainer exec --bind ${TUTORIAL} ${BEDTOOLS_SIF} \
@@ -122,8 +123,10 @@ cat ${REP1} ${REP2} ${REP3} \
 
 echo "Union peak count: $(wc -l < ${OUTDIR}/union_peaks.bed)"
 
-# Step 2: Count how many replicates support each union peak
-# A union peak is "reproducible" if ≥2 replicates overlap it
+# Step 2: Identify which union peaks are supported by each replicate individually
+# A union peak is "supported" by a replicate if it overlaps at least one peak
+# called in that replicate's narrowPeak file
+echo "[$(date)] Counting per-replicate support..."
 
 for REP in 1 2 3; do
     REPFILE=${PEAKDIR}/atac_wt_rep${REP}/atac_wt_rep${REP}_peaks.narrowPeak
@@ -133,18 +136,21 @@ for REP in 1 2 3; do
             -b ${REPFILE} \
             -u \
     > ${OUTDIR}/union_supported_by_rep${REP}.bed
+    echo "  Rep${REP} support: $(wc -l < ${OUTDIR}/union_supported_by_rep${REP}.bed) peaks"
 done
 
-# Keep peaks found in at least 2 of 3 replicates
+# Step 3: Keep peaks found in at least 2 of 3 replicates
+# bedtools multiinter counts how many input files overlap each base pair.
+# Filtering for $4 >= 2 retains positions covered by ≥2 replicates.
+# bedtools merge then reassembles adjacent bases back into intervals.
+echo "[$(date)] Applying ≥2/3 reproducibility filter..."
+
 apptainer exec --bind ${TUTORIAL} ${BEDTOOLS_SIF} \
-    bedtools intersect \
-        -a ${OUTDIR}/union_peaks.bed \
-        -b ${OUTDIR}/union_supported_by_rep1.bed \
+    bedtools multiinter \
+        -i ${OUTDIR}/union_supported_by_rep1.bed \
            ${OUTDIR}/union_supported_by_rep2.bed \
            ${OUTDIR}/union_supported_by_rep3.bed \
-        -u \
-        -filenames \
-| sort -k1,1 -k2,2n \
+| awk '$4 >= 2 {print $1"\t"$2"\t"$3}' \
 | apptainer exec --bind ${TUTORIAL} ${BEDTOOLS_SIF} \
     bedtools merge -i stdin \
 > ${OUTDIR}/consensus_peaks_2of3.bed
@@ -181,24 +187,40 @@ TUTORIAL=/fs/scratch/PAS3260/<your_username>/rnaseq_atacseq
 SAM_SIF=${TUTORIAL}/containers/samtools.sif
 BEDTOOLS_SIF=${TUTORIAL}/containers/bedtools.sif
 CONSENSUS=${TUTORIAL}/atacseq/peaks/consensus/consensus_peaks_2of3.bed
+OUTFILE=${TUTORIAL}/atacseq/peaks/consensus/frip_scores.txt
 
-echo "Sample | Total_reads | Reads_in_peaks | FRiP"
-echo "-------|-------------|----------------|------"
+echo "Sample | Total_reads | Reads_in_peaks | FRiP" | tee ${OUTFILE}
+echo "-------|-------------|----------------|------" | tee -a ${OUTFILE}
 
 for SAMPLE in atac_wt_rep1 atac_wt_rep2 atac_wt_rep3; do
     BAM=${TUTORIAL}/atacseq/aligned/${SAMPLE}.filtered.bam
+    echo "[$(date)] Processing: ${SAMPLE}"
 
+    # Total properly paired reads in the filtered BAM
+    # -f 2: properly paired
+    # -F 4: exclude unmapped
     TOTAL=$(apptainer exec --bind ${TUTORIAL} ${SAM_SIF} \
-        samtools view -c -f 2 ${BAM})
+        samtools view -c -f 2 -F 4 ${BAM})
 
+    # Reads overlapping consensus peaks by any amount (≥1 bp)
+    # bedtools intersect -u: report each -a read once if it overlaps any peak
+    # samtools view -c applies the same -f 2 -F 4 filter for consistency with TOTAL
     IN_PEAKS=$(apptainer exec --bind ${TUTORIAL} ${BEDTOOLS_SIF} \
-        bedtools intersect -a ${BAM} -b ${CONSENSUS} -u -f 0.5 \
+        bedtools intersect \
+            -a ${BAM} \
+            -b ${CONSENSUS} \
+            -u \
     | apptainer exec --bind ${TUTORIAL} ${SAM_SIF} \
-        samtools view -c)
+        samtools view -c -f 2 -F 4)
 
     FRIP=$(echo "scale=4; ${IN_PEAKS} / ${TOTAL}" | bc)
-    echo "${SAMPLE} | ${TOTAL} | ${IN_PEAKS} | ${FRIP}"
+
+    echo "${SAMPLE} | ${TOTAL} | ${IN_PEAKS} | ${FRIP}" | tee -a ${OUTFILE}
 done
+
+echo ""
+echo "FRiP scores written to: ${OUTFILE}"
+echo "Note: FRiP > 0.2 is generally considered acceptable for ATAC-seq."
 EOF
 cd ${TUTORIAL}
 sbatch ${TUTORIAL}/scripts/05_frip_score.sh
@@ -232,19 +254,31 @@ PEAKS=${TUTORIAL}/atacseq/peaks/consensus/consensus_peaks_2of3.bed
 OUTDIR=${TUTORIAL}/atacseq/peaks/consensus
 
 # Extract promoter regions (2 kb upstream of each gene TSS)
-# First get gene features from GFF3
+# GFF3 format uses ID= (not gene_id=) in the attributes column.
+# Using plain ERE ID=([^;]+) for gawk compatibility — no PCRE groups.
+# This extracts gene-AMS68_XXXXXX IDs consistent with the rest of the pipeline.
+echo "[$(date)] Building gene promoter BED..."
+
 grep -P "\tgene\t" ${GFF} \
     | awk 'BEGIN{OFS="\t"} {
-        match($9, /gene_id=([^;]+)/, arr)
-        # For + strand: promoter is [start-2000, start]
-        # For - strand: promoter is [end, end+2000]
-        if ($7=="+") print $1, ($4>2000 ? $4-2001 : 0), $4, arr[1], ".", $7
-        else print $1, $5-1, $5+2000, arr[1], ".", $7
+        match($9, /ID=([^;]+)/, arr)
+        gid = arr[1]
+        if ($7=="+") print $1, ($4>2000 ? $4-2001 : 0), $4, gid, ".", $7
+        else          print $1, $5-1, $5+2000, gid, ".", $7
     }' \
     | sort -k1,1 -k2,2n \
     > ${OUTDIR}/gene_promoters_2kb.bed
 
+echo "Gene promoter regions: $(wc -l < ${OUTDIR}/gene_promoters_2kb.bed)"
+echo "Sample gene IDs:"
+head -3 ${OUTDIR}/gene_promoters_2kb.bed | cut -f4
+
 # Intersect consensus peaks with promoters
+# -wa -wb: output all columns from both -a (peaks) and -b (promoters)
+# Output columns: chr_peak, start_peak, end_peak,
+#                 chr_prom, start_prom, end_prom, gene_id, ".", strand
+echo "[$(date)] Intersecting peaks with promoters..."
+
 apptainer exec --bind ${TUTORIAL} ${BEDTOOLS_SIF} \
     bedtools intersect \
         -a ${PEAKS} \
@@ -258,11 +292,19 @@ echo ""
 echo "Promoter peaks (first 10):"
 head -10 ${OUTDIR}/peaks_in_promoters.bed
 
-# Extract just gene IDs near peaks
-awk '{print $7}' ${OUTDIR}/peaks_in_promoters.bed | sort -u \
+# Extract gene IDs near peaks (column 7 of the intersect output)
+# Using -F'\t' to split on tabs, ensuring empty fields are not collapsed
+awk -F'\t' '{print $7}' ${OUTDIR}/peaks_in_promoters.bed \
+    | grep -v '^$' \
+    | sort -u \
     > ${OUTDIR}/genes_with_promoter_peaks.txt
+
 echo ""
 echo "Unique genes with promoter ATAC peaks: $(wc -l < ${OUTDIR}/genes_with_promoter_peaks.txt)"
+echo "Sample gene IDs:"
+head -3 ${OUTDIR}/genes_with_promoter_peaks.txt
+
+echo "[$(date)] Done."
 EOF
 cd ${TUTORIAL}
 sbatch ${TUTORIAL}/scripts/05_annotate_peaks.sh
